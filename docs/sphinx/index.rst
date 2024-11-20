@@ -1,32 +1,32 @@
 ======================================
-Welcome to HIE-AllSpark documentation
+Welcome to DashInfer documentation
 ======================================
 
 DashInfer is a highly optimized LLM inference engine with the following core features:
 
-- **Lightweight Architecture**: HIE-AllSpark requires minimal third-party dependencies and uses static linking for almost all dependency libraries. By providing C++ and Python interfaces, HIE-AllSpark can be easily integrated into your existing system.
+- **Lightweight Architecture**: DashInfer requires minimal third-party dependencies and uses static linking for almost all dependency libraries. By providing C++ and Python interfaces, DashInfer can be easily integrated into your existing system.
 
-- **High Precision**: HIE-AllSpark has been rigorously tested to ensure accuracy, and is able to provide inference whose accuracy is consistent with PyTorch and other GPU engines (e.g., vLLM).
+- **High Precision**: DashInfer has been rigorously tested to ensure accuracy, and is able to provide inference whose accuracy is consistent with PyTorch and other GPU engines (e.g., vLLM).
 
-- **High Performance**: HIE-AllSpark employs optmized kernels to provide high-performance LLM serving, as well as lots of standard LLM inference techniques, including:
+- **High Performance**: DashInfer employs optimized kernels to provide high-performance LLM serving, as well as lots of standard LLM inference techniques, including:
 
-  - **Continuous Batching**: HIE-AllSpark allows for the immediate insertion of new requests and supports streaming outputs.
+  - **Continuous Batching**: DashInfer allows for the immediate insertion of new requests and supports streaming outputs.
 
   - **Paged Attention**: Using our self-developed paged attention technique (which we call *SpanAttention*), we can achieve efficient acceleration of attention operator, combined with int8 and uint4 KV cache quantization, based on highly efficient GEMM and GEMV implementations.
 
-  - **Prefix Cache**: HIE-AllSpark supports highly efficient Prefix Cache for prompts, which accelerates standard LLMs and MultiModal LMs (MMLMs) like Qwen-VL, using both GPU and CPU.
+  - **Prefix Cache**: DashInfer supports highly efficient Prefix Cache for prompts, which accelerates standard LLMs and MultiModal LMs (MMLMs) like Qwen-VL, using both GPU and CPU.
 
-  - **Quantization Support**: Using HIE-AllSpark's *InstantQuant* (IQ), weight-only quantization acceleration can be achieved without fine-tuning, improving deployment efficiency. Accuracy evaluation shows that IQ has almost no impact on model accuracy, for detail, see :doc:`quant/weight_activate_quant`.
+  - **Quantization Support**: Using DashInfer's *InstantQuant* (IQ), weight-only quantization acceleration can be achieved without fine-tuning, improving deployment efficiency. Accuracy evaluation shows that IQ has almost no impact on model accuracy, for detail, see :doc:`quant/weight_activate_quant`.
 
   - **Asynchronous Interface**: Request-based asynchronous interfaces offer individual control over generation parameters and request status of each request.
 
 - Supported Models:
 
-  - **Mainstream Open-Source LLMs**: HIE-AllSpark supports mainstream open-source LLMs including Qwen, LLaMA, ChatGLM, etc., and supports loading models in the Huggingface format.
+  - **Mainstream Open-Source LLMs**: DashInfer supports mainstream open-source LLMs including Qwen, LLaMA, ChatGLM, etc., and supports loading models in the Huggingface format.
 
-  - **MultiModal LMs**: HIE-AllSpark supports MultiModal Language Models (MMLMs) including Qwen-VL, Qwen-AL, and Qwen2-VL.
+  - **MultiModal LMs**: DashInfer supports MultiModal Language Models (MMLMs) including Qwen-VL, Qwen-AL, and Qwen2-VL.
 
-- **OpenAI API Server**: HIE-AllSpark can easily serve with fastChat to achieve OpenAI-compatible API server.
+- **OpenAI API Server**: DashInfer can easily serve with fastChat to achieve OpenAI-compatible API server.
 
 - **Multi-Programming-Language API**: Both C++ and Python interfaces are provided. It is possible to extend C++ interface to Java, Rust and other programming languages, via standard cross-language interfaces.
 
