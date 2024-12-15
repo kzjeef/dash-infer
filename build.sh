@@ -1,4 +1,6 @@
+#!/bin/bash
 set -x
+
 
 clean="OFF"
 
@@ -55,7 +57,7 @@ if [ ! -d "./build"  ]; then
       conanfile=../conan/conanfile_openmpi.txt
     fi
 
-    if [ "${with_platform,,}" == "armclang" ]; then
+    if [ "${with_platform}" == "armclang" ]; then
       conanfile=../conan/conanfile_arm.txt
       if [ "${enable_multinuma}" == "ON" ]; then
         conanfile=../conan/conanfile_openmpi_arm.txt
@@ -78,7 +80,7 @@ cd build
 source ./activate.sh
 export PATH=`pwd`/bin:$PATH
 
-if [ "${with_platform,,}" == "cuda" ]; then
+if [ "${with_platform}" == "cuda" ]; then
   cmake .. \
       -DCMAKE_BUILD_TYPE=${build_type} \
       -DCONFIG_ACCELERATOR_TYPE=CUDA \
@@ -94,7 +96,7 @@ if [ "${with_platform,,}" == "cuda" ]; then
       -DALWAYS_READ_LOAD_MODEL=OFF \
       -DENABLE_SPAN_ATTENTION=${enable_span_attn} \
       -DENABLE_MULTINUMA=OFF
-elif [ "${with_platform,,}" == "x86" ]; then
+elif [ "${with_platform}" == "x86" ]; then
   cmake .. \
       -DCMAKE_BUILD_TYPE=${build_type} \
       -DCONFIG_ACCELERATOR_TYPE=NONE \
@@ -105,7 +107,7 @@ elif [ "${with_platform,,}" == "x86" ]; then
       -DENABLE_SPAN_ATTENTION=OFF \
       -DALWAYS_READ_LOAD_MODEL=ON \
       -DENABLE_MULTINUMA=${enable_multinuma}
-elif [ "${with_platform,,}" == "armclang" ]; then
+elif [ "${with_platform}" == "armclang" ]; then
   cmake .. \
       -DCMAKE_BUILD_TYPE=${build_type} \
       -DCONFIG_ACCELERATOR_TYPE=NONE \

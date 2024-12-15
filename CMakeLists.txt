@@ -125,11 +125,12 @@ add_definitions(-DALLSPARK_VERSION_MINOR="${PROJECT_VERSION_MINOR}")
 add_definitions(-DALLSPARK_VERSION_PATCH="${PROJECT_VERSION_PATCH}")
 
 # 3rd dependency
-include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
-conan_basic_setup(TARGETS)
+#include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
+#conan_basic_setup(TARGETS)
 
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
-find_package(Protobuf REQUIRED)
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_BINARY_DIR}/conan-cmake)
+find_package(protobuf REQUIRED)
 
 # thirdparty
 set(INSTALL_LOCATION
