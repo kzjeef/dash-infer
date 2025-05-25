@@ -1,4 +1,4 @@
-name: Build Check
+name: Build Check with Shared Runner
 # docker download mirror should setup in self host machine.
 # the mirror status can be found at : https://status.daocloud.io/status/docker
 on:
@@ -17,7 +17,7 @@ jobs:
         exclude:
           - arch: X64
             image: "dev-centos8-arm:v2"
-    runs-on: [self-hosted, Linux, "${{ matrix.arch }}"]
+    on-runs: ubuntu-22.04
     container:
       image: dashinfer/${{ matrix.image }}
     env:
@@ -30,10 +30,19 @@ jobs:
         shell: bash -l {0}
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
       with:
-        lfs: true
-	submodules: true
+        lfs: false
+
+    - name: Pull LFS
+      run: |
+        git lfs install --force
+        git lfs pull
+
+    - name: Init submodule
+      run: |
+        git submodule init
+        git submodule update
 
     - name: Build tgz package
       shell: bash
@@ -75,7 +84,7 @@ jobs:
         arch: [X64]
         image: ["dev-centos7-cu124:v1"]
         enable_cuda: [0, 1]
-    runs-on: [self-hosted, Linux, "${{ matrix.arch }}"]
+    runs-on: ubuntu-22.04
     container:
       image: dashinfer/${{ matrix.image }}
     env:
@@ -85,10 +94,19 @@ jobs:
       ENABLE_CUDA: ${{ matrix.enable_cuda }}
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v3
       with:
-        lfs: true
-	submodules: true
+        lfs: false
+        
+    - name: Pull LFS
+      run: |
+        git lfs install --force
+        git lfs pull
+
+    - name: Init submodule
+      run: |
+        git submodule init
+        git submodule update
 
     - name: Build manylinux wheels
       shell: bash
