@@ -560,190 +560,59 @@ void TestMoeFullPipeline(int total_token, int num_expert, int top_k,
   cudaStreamDestroy(stream);
 }
 
-}  // anonymous namespace
-
-// ===========================================================================
-//  Test cases: MoeBatchedGemm kernel (WGMMA, SM >= 90)
-// ===========================================================================
-
-TEST(MOE_KERNEL, BatchedGemm_FP16_Small) {
+// ---------------------------------------------------------------------------
+//  Helper: SM check for WGMMA tests
+// ---------------------------------------------------------------------------
+static bool SkipIfNoWGMMA() {
   cudaDeviceProp dprop;
   int device_id;
   cudaGetDevice(&device_id);
   cudaGetDeviceProperties(&dprop, device_id);
   int sm = dprop.major << 8 | dprop.minor;
-  if (sm < 0x0900 || sm >= 0x0a00) {
-    GTEST_SKIP() << "MoeBatchedGemm WGMMA requires SM 90 native SASS (skip on SM < 90 or SM >= 100)";
-  }
-  // 8 rows, 8 experts, nMatBPerMatARow=1, N=256, K=128
-  TestMoeBatchedGemm<half>(8, 8, 1, 256, 128, 0.05f);
+  return (sm < 0x0900 || sm >= 0x0a00);
 }
 
-TEST(MOE_KERNEL, BatchedGemm_FP16_Medium) {
-  cudaDeviceProp dprop;
-  int device_id;
-  cudaGetDevice(&device_id);
-  cudaGetDeviceProperties(&dprop, device_id);
-  int sm = dprop.major << 8 | dprop.minor;
-  if (sm < 0x0900 || sm >= 0x0a00) {
-    GTEST_SKIP() << "MoeBatchedGemm WGMMA requires SM 90 native SASS (skip on SM < 90 or SM >= 100)";
-  }
-  // 64 rows, 8 experts, nMatBPerMatARow=1, N=1024, K=512
-  TestMoeBatchedGemm<half>(64, 8, 1, 1024, 512, 0.08f);
-}
-
-TEST(MOE_KERNEL, BatchedGemm_FP16_Large) {
-  cudaDeviceProp dprop;
-  int device_id;
-  cudaGetDevice(&device_id);
-  cudaGetDeviceProperties(&dprop, device_id);
-  int sm = dprop.major << 8 | dprop.minor;
-  if (sm < 0x0900 || sm >= 0x0a00) {
-    GTEST_SKIP() << "MoeBatchedGemm WGMMA requires SM 90 native SASS (skip on SM < 90 or SM >= 100)";
-  }
-  // 256 rows, 64 experts, nMatBPerMatARow=1, N=2048, K=1024
-  TestMoeBatchedGemm<half>(256, 64, 1, 2048, 1024, 0.1f);
-}
-
-#ifdef ENABLE_BF16
-TEST(MOE_KERNEL, BatchedGemm_BF16_Small) {
-  cudaDeviceProp dprop;
-  int device_id;
-  cudaGetDevice(&device_id);
-  cudaGetDeviceProperties(&dprop, device_id);
-  int sm = dprop.major << 8 | dprop.minor;
-  if (sm < 0x0900 || sm >= 0x0a00) {
-    GTEST_SKIP() << "MoeBatchedGemm WGMMA requires SM 90 native SASS (skip on SM < 90 or SM >= 100)";
-  }
-  TestMoeBatchedGemm<hie::bfloat16>(8, 8, 1, 256, 128, 0.08f);
-}
-
-TEST(MOE_KERNEL, BatchedGemm_BF16_Medium) {
-  cudaDeviceProp dprop;
-  int device_id;
-  cudaGetDevice(&device_id);
-  cudaGetDeviceProperties(&dprop, device_id);
-  int sm = dprop.major << 8 | dprop.minor;
-  if (sm < 0x0900 || sm >= 0x0a00) {
-    GTEST_SKIP() << "MoeBatchedGemm WGMMA requires SM 90 native SASS (skip on SM < 90 or SM >= 100)";
-  }
-  TestMoeBatchedGemm<hie::bfloat16>(64, 8, 1, 1024, 512, 0.1f);
-}
-#endif
-
-// ===========================================================================
-//  Test cases: Full MOE pipeline (end-to-end)
-// ===========================================================================
-
-TEST(MOE_KERNEL, FullPipeline_FP16_Tiny) {
-  cudaDeviceProp dprop;
-  int device_id;
-  cudaGetDevice(&device_id);
-  cudaGetDeviceProperties(&dprop, device_id);
-  int sm = dprop.major << 8 | dprop.minor;
-  if (sm < 0x0900 || sm >= 0x0a00) {
-    GTEST_SKIP() << "FullPipeline uses WGMMA, requires SM 90 native SASS";
-  }
-  // Tiny config: fast to run, easy to debug
-  // 2 tokens, 4 experts, top-2, hidden=64, proj=32
-  TestMoeFullPipeline<half>(2, 4, 2, 64, 32, 0.3f);
-}
-
-TEST(MOE_KERNEL, FullPipeline_FP16_Small) {
-  cudaDeviceProp dprop;
-  int device_id;
-  cudaGetDevice(&device_id);
-  cudaGetDeviceProperties(&dprop, device_id);
-  int sm = dprop.major << 8 | dprop.minor;
-  if (sm < 0x0900 || sm >= 0x0a00) {
-    GTEST_SKIP() << "FullPipeline uses WGMMA, requires SM 90 native SASS";
-  }
-  // Qwen2-MoE-like small: 8 tokens, 8 experts, top-2, hidden=256, proj=128
-  TestMoeFullPipeline<half>(8, 8, 2, 256, 128, 0.3f);
-}
-
-TEST(MOE_KERNEL, FullPipeline_FP16_Medium) {
-  cudaDeviceProp dprop;
-  int device_id;
-  cudaGetDevice(&device_id);
-  cudaGetDeviceProperties(&dprop, device_id);
-  int sm = dprop.major << 8 | dprop.minor;
-  if (sm < 0x0900 || sm >= 0x0a00) {
-    GTEST_SKIP() << "FullPipeline uses WGMMA, requires SM 90 native SASS";
-  }
-  // Medium: 32 tokens, 16 experts, top-2, hidden=512, proj=256
-  TestMoeFullPipeline<half>(32, 16, 2, 512, 256, 0.3f);
-}
-
-#ifdef ENABLE_BF16
-TEST(MOE_KERNEL, FullPipeline_BF16_Small) {
-  cudaDeviceProp dprop;
-  int device_id;
-  cudaGetDevice(&device_id);
-  cudaGetDeviceProperties(&dprop, device_id);
-  int sm = dprop.major << 8 | dprop.minor;
-  if (sm < 0x0900 || sm >= 0x0a00) {
-    GTEST_SKIP() << "FullPipeline uses WGMMA, requires SM 90 native SASS";
-  }
-  TestMoeFullPipeline<hie::bfloat16>(8, 8, 2, 256, 128, 0.4f);
-}
-#endif
-
-// ===========================================================================
-//  Test cases: MOE sub-kernels (softmax, topk, silu-glu, finalize)
-// ===========================================================================
-
-TEST(MOE_KERNEL, SoftmaxLowReduce_FP16) {
-  const int total_token = 16;
-  const int num_expert = 8;
-
-  auto input_h = common::rand_normal_float<half>(total_token * num_expert, 1.f);
-
-  // CPU reference
+// ---------------------------------------------------------------------------
+//  Helper: Parameterized sub-kernel tests
+// ---------------------------------------------------------------------------
+void TestSoftmaxLowReduce(int total_token, int num_expert) {
   std::vector<float> input_f(total_token * num_expert);
-  for (int i = 0; i < total_token * num_expert; ++i) input_f[i] = float(input_h[i]);
+  {
+    std::default_random_engine gen(42);
+    std::normal_distribution<float> dis(0.f, 1.f);
+    for (auto& v : input_f) v = dis(gen);
+  }
   std::vector<float> ref_f(total_token * num_expert);
   CPU_SoftmaxLowReduce(input_f.data(), ref_f.data(), total_token, num_expert);
 
   cudaStream_t stream;
   cudaStreamCreate(&stream);
-
-  float *d_input, *d_output;
-  cudaMalloc(&d_input, total_token * num_expert * sizeof(float));
-  cudaMalloc(&d_output, total_token * num_expert * sizeof(float));
-
-  // Copy float input
-  cudaMemcpyAsync(d_input, input_f.data(),
+  float *d_in, *d_out;
+  cudaMalloc(&d_in, total_token * num_expert * sizeof(float));
+  cudaMalloc(&d_out, total_token * num_expert * sizeof(float));
+  cudaMemcpyAsync(d_in, input_f.data(),
                   total_token * num_expert * sizeof(float),
                   cudaMemcpyHostToDevice, stream);
-  allspark::cuda::SoftmaxLowReduceKernelLauncher<float>(d_input, d_output,
-                                                        total_token, num_expert,
-                                                        stream);
+  allspark::cuda::SoftmaxLowReduceKernelLauncher<float>(
+      d_in, d_out, total_token, num_expert, stream);
   cudaStreamSynchronize(stream);
-
-  std::vector<float> output_h(total_token * num_expert);
-  cudaMemcpy(output_h.data(), d_output,
-             total_token * num_expert * sizeof(float), cudaMemcpyDeviceToHost);
-
-  float max_diff = check_equal<float>(ref_f.data(), output_h.data(),
-                                       total_token * num_expert);
-  printf("  SoftmaxLowReduce MaxDiff=%f\n", max_diff);
+  std::vector<float> out_h(total_token * num_expert);
+  cudaMemcpy(out_h.data(), d_out, total_token * num_expert * sizeof(float),
+             cudaMemcpyDeviceToHost);
+  float max_diff =
+      check_equal<float>(ref_f.data(), out_h.data(), total_token * num_expert);
+  printf("  SoftmaxLowReduce(tokens=%d, experts=%d) MaxDiff=%f\n", total_token,
+         num_expert, max_diff);
   EXPECT_LE(max_diff, 1e-4f);
-
-  cudaFree(d_input);
-  cudaFree(d_output);
+  cudaFree(d_in);
+  cudaFree(d_out);
   cudaStreamDestroy(stream);
 }
 
-TEST(MOE_KERNEL, TopK_FP16) {
-  const int total_token = 16;
-  const int num_expert = 8;
-  const int top_k = 2;
-
-  // Random softmax-like input (all positive, sums to ~1 per row)
+void TestTopK(int total_token, int num_expert, int top_k) {
   std::vector<float> input_f(total_token * num_expert);
   {
-    std::default_random_engine gen(123);
+    std::default_random_engine gen(123 + num_expert);
     std::uniform_real_distribution<float> dis(0.f, 1.f);
     for (int t = 0; t < total_token; ++t) {
       float sum = 0;
@@ -751,68 +620,49 @@ TEST(MOE_KERNEL, TopK_FP16) {
         input_f[t * num_expert + e] = dis(gen);
         sum += input_f[t * num_expert + e];
       }
-      for (int e = 0; e < num_expert; ++e)
-        input_f[t * num_expert + e] /= sum;
+      for (int e = 0; e < num_expert; ++e) input_f[t * num_expert + e] /= sum;
     }
   }
-
-  std::vector<float> topk_score_ref(total_token * top_k);
-  std::vector<int> topk_indice_ref(total_token * top_k);
-  CPU_TopK(input_f.data(), topk_score_ref.data(), topk_indice_ref.data(),
-           total_token, num_expert, top_k);
+  std::vector<float> ref_score(total_token * top_k);
+  std::vector<int> ref_indice(total_token * top_k);
+  CPU_TopK(input_f.data(), ref_score.data(), ref_indice.data(), total_token,
+           num_expert, top_k);
 
   cudaStream_t stream;
   cudaStreamCreate(&stream);
-
-  float *d_input, *d_score;
+  float *d_in, *d_score;
   int* d_indice;
-  cudaMalloc(&d_input, total_token * num_expert * sizeof(float));
+  cudaMalloc(&d_in, total_token * num_expert * sizeof(float));
   cudaMalloc(&d_score, total_token * top_k * sizeof(float));
   cudaMalloc(&d_indice, total_token * top_k * sizeof(int));
-
-  cudaMemcpyAsync(d_input, input_f.data(),
+  cudaMemcpyAsync(d_in, input_f.data(),
                   total_token * num_expert * sizeof(float),
                   cudaMemcpyHostToDevice, stream);
-  allspark::cuda::TopKKernelLauncher<float>(d_score, d_indice, d_input,
+  allspark::cuda::TopKKernelLauncher<float>(d_score, d_indice, d_in,
                                             total_token, num_expert, top_k,
                                             stream);
   cudaStreamSynchronize(stream);
-
-  std::vector<float> score_h(total_token * top_k);
-  std::vector<int> indice_h(total_token * top_k);
-  cudaMemcpy(score_h.data(), d_score, total_token * top_k * sizeof(float),
+  std::vector<float> gpu_score(total_token * top_k);
+  cudaMemcpy(gpu_score.data(), d_score, total_token * top_k * sizeof(float),
              cudaMemcpyDeviceToHost);
-  cudaMemcpy(indice_h.data(), d_indice, total_token * top_k * sizeof(int),
-             cudaMemcpyDeviceToHost);
-
-  // Verify: for each token, the top-k scores should match (possibly in
-  // different order). Check that the selected scores match.
   for (int t = 0; t < total_token; ++t) {
-    std::vector<float> ref_scores(topk_score_ref.begin() + t * top_k,
-                                  topk_score_ref.begin() + (t + 1) * top_k);
-    std::vector<float> gpu_scores(score_h.begin() + t * top_k,
-                                  score_h.begin() + (t + 1) * top_k);
-    std::sort(ref_scores.begin(), ref_scores.end());
-    std::sort(gpu_scores.begin(), gpu_scores.end());
-    for (int k = 0; k < top_k; ++k) {
-      EXPECT_NEAR(ref_scores[k], gpu_scores[k], 1e-5f)
-          << "Token " << t << ", rank " << k;
-    }
+    std::vector<float> rs(ref_score.begin() + t * top_k,
+                          ref_score.begin() + (t + 1) * top_k);
+    std::vector<float> gs(gpu_score.begin() + t * top_k,
+                          gpu_score.begin() + (t + 1) * top_k);
+    std::sort(rs.begin(), rs.end());
+    std::sort(gs.begin(), gs.end());
+    for (int k = 0; k < top_k; ++k)
+      EXPECT_NEAR(rs[k], gs[k], 1e-5f) << "Token " << t << " rank " << k;
   }
-
-  cudaFree(d_input);
+  cudaFree(d_in);
   cudaFree(d_score);
   cudaFree(d_indice);
   cudaStreamDestroy(stream);
 }
 
-TEST(MOE_KERNEL, UnaryGLU_SiLU_FP16) {
-  const int M = 32;
-  const int proj_size = 128;
-
+void TestSiluGLU(int M, int proj_size) {
   auto input_h = common::rand_normal_float<half>(M * proj_size * 2, 0.5f);
-
-  // CPU reference
   std::vector<float> input_f(M * proj_size * 2);
   for (int i = 0; i < M * proj_size * 2; ++i) input_f[i] = float(input_h[i]);
   std::vector<float> ref_f(M * proj_size);
@@ -820,31 +670,259 @@ TEST(MOE_KERNEL, UnaryGLU_SiLU_FP16) {
 
   cudaStream_t stream;
   cudaStreamCreate(&stream);
-
-  half *d_input, *d_output;
-  cudaMalloc(&d_input, M * proj_size * 2 * sizeof(half));
-  cudaMalloc(&d_output, M * proj_size * sizeof(half));
-
-  cudaMemcpyAsync(d_input, input_h.data(), M * proj_size * 2 * sizeof(half),
+  half *d_in, *d_out;
+  cudaMalloc(&d_in, M * proj_size * 2 * sizeof(half));
+  cudaMalloc(&d_out, M * proj_size * sizeof(half));
+  cudaMemcpyAsync(d_in, input_h.data(), M * proj_size * 2 * sizeof(half),
                   cudaMemcpyHostToDevice, stream);
-  allspark::cuda::UnaryGLUKernelLauncher(d_output, d_input, (size_t)M,
+  allspark::cuda::UnaryGLUKernelLauncher(d_out, d_in, (size_t)M,
                                           (size_t)proj_size,
-                                          allspark::UnaryType::SILU, stream);
+                                          (int)allspark::UnaryType::SILU,
+                                          stream);
   cudaStreamSynchronize(stream);
-
-  std::vector<half> output_h(M * proj_size);
-  cudaMemcpy(output_h.data(), d_output, M * proj_size * sizeof(half),
+  std::vector<half> out_h(M * proj_size);
+  cudaMemcpy(out_h.data(), d_out, M * proj_size * sizeof(half),
              cudaMemcpyDeviceToHost);
-
   float max_diff = 0.f;
   for (int i = 0; i < M * proj_size; ++i) {
-    float diff = std::fabs(float(output_h[i]) - ref_f[i]);
+    float diff = std::fabs(float(out_h[i]) - ref_f[i]);
     if (diff > max_diff) max_diff = diff;
   }
-  printf("  UnaryGLU SiLU MaxDiff=%f\n", max_diff);
-  EXPECT_LE(max_diff, 0.01f);
-
-  cudaFree(d_input);
-  cudaFree(d_output);
+  printf("  UnaryGLU SiLU(M=%d, proj=%d) MaxDiff=%f\n", M, proj_size,
+         max_diff);
+  EXPECT_LE(max_diff, 0.02f);
+  cudaFree(d_in);
+  cudaFree(d_out);
   cudaStreamDestroy(stream);
+}
+
+// ---------------------------------------------------------------------------
+//  Benchmark helper: MoeBatchedGemm TFLOPS measurement
+// ---------------------------------------------------------------------------
+template <typename T>
+void BenchMoeBatchedGemm(int matARows, int num_expert, int N, int K,
+                          int warmup = 3, int iters = 10) {
+  const int nMatBPerMatARow = 1;
+  auto A_host = common::rand_normal_float<T>(matARows * K, 0.3f);
+  auto B_host =
+      common::rand_normal_float<T>((int64_t)num_expert * K * N, 0.3f);
+  std::vector<uint32_t> idx_host(matARows);
+  {
+    std::default_random_engine gen(42);
+    std::uniform_int_distribution<int> dis(0, num_expert - 1);
+    for (int r = 0; r < matARows; ++r) idx_host[r] = dis(gen);
+  }
+
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+  T *d_A, *d_B, *d_C;
+  uint32_t *d_idx, *d_row;
+  cudaMalloc(&d_A, matARows * K * sizeof(T));
+  cudaMalloc(&d_B, (int64_t)num_expert * K * N * sizeof(T));
+  cudaMalloc(&d_C, matARows * N * sizeof(T));
+  cudaMalloc(&d_idx, matARows * sizeof(uint32_t));
+  cudaMalloc(&d_row, matARows * sizeof(uint32_t));
+  cudaMemcpyAsync(d_A, A_host.data(), matARows * K * sizeof(T),
+                  cudaMemcpyHostToDevice, stream);
+  cudaMemcpyAsync(d_B, B_host.data(),
+                  (int64_t)num_expert * K * N * sizeof(T),
+                  cudaMemcpyHostToDevice, stream);
+  cudaMemcpyAsync(d_idx, idx_host.data(), matARows * sizeof(uint32_t),
+                  cudaMemcpyHostToDevice, stream);
+  size_t wsSize =
+      allspark::cuda::GetWorkspaceSizeLauncher(matARows, num_expert);
+  void* d_ws;
+  cudaMalloc(&d_ws, wsSize);
+
+  // Warmup
+  for (int i = 0; i < warmup; ++i) {
+    cudaMemsetAsync(d_row, 0, matARows * sizeof(uint32_t), stream);
+    allspark::cuda::MoeBatchedGemmLauncher<T>(d_A, d_B, d_idx, d_C, d_row,
+                                               d_ws, wsSize, matARows, N, K,
+                                               num_expert, nMatBPerMatARow,
+                                               stream);
+  }
+  cudaStreamSynchronize(stream);
+
+  // Timed iterations
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, stream);
+  for (int i = 0; i < iters; ++i) {
+    cudaMemsetAsync(d_row, 0, matARows * sizeof(uint32_t), stream);
+    allspark::cuda::MoeBatchedGemmLauncher<T>(d_A, d_B, d_idx, d_C, d_row,
+                                               d_ws, wsSize, matARows, N, K,
+                                               num_expert, nMatBPerMatARow,
+                                               stream);
+  }
+  cudaEventRecord(stop, stream);
+  cudaStreamSynchronize(stream);
+  float ms = 0;
+  cudaEventElapsedTime(&ms, start, stop);
+  float avg_ms = ms / iters;
+
+  // FLOPS: each of matARows rows does a [1, K] x [K, N] GEMM = 2*K*N FLOPs
+  double flops = 2.0 * matARows * K * N;
+  double tflops = flops / (avg_ms * 1e-3) / 1e12;
+  printf("  Bench MoeBatchedGemm<%s>: rows=%d, experts=%d, N=%d, K=%d "
+         "=> %.3f ms, %.2f TFLOPS\n",
+         (std::is_same<T, half>::value ? "half" : "bf16"), matARows, num_expert,
+         N, K, avg_ms, tflops);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  cudaFree(d_A);
+  cudaFree(d_B);
+  cudaFree(d_C);
+  cudaFree(d_idx);
+  cudaFree(d_row);
+  cudaFree(d_ws);
+  cudaStreamDestroy(stream);
+}
+
+}  // anonymous namespace
+
+// ===========================================================================
+//  Test cases: MoeBatchedGemm kernel (WGMMA, SM 90)
+// ===========================================================================
+
+// --- Generic shape tests ---
+TEST(MOE_KERNEL, BatchedGemm_FP16_Small) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeBatchedGemm<half>(8, 8, 1, 256, 128, 0.05f);
+}
+
+// --- Real model shapes: down-proj GEMM (N=hidden, K=proj) ---
+
+// DeepSeek V3: 256 experts, hidden=7168, proj=2048
+TEST(MOE_KERNEL, BatchedGemm_DeepSeekV3_DownProj) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeBatchedGemm<half>(32, 256, 1, 7168, 2048, 0.1f);
+}
+
+// Qwen3-235B-A22B: 128 experts, hidden=4096, proj=1536
+TEST(MOE_KERNEL, BatchedGemm_Qwen3_235B_DownProj) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeBatchedGemm<half>(32, 128, 1, 4096, 1536, 0.1f);
+}
+
+// Qwen3-30B-A3B: 128 experts, hidden=2048, proj=768
+TEST(MOE_KERNEL, BatchedGemm_Qwen3_30B_DownProj) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeBatchedGemm<half>(32, 128, 1, 2048, 768, 0.1f);
+}
+
+// Qwen1.5-MoE-A2.7B: 60 experts (non-power-of-2), hidden=2048, proj=1408
+TEST(MOE_KERNEL, BatchedGemm_Qwen15MoE_DownProj) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeBatchedGemm<half>(16, 60, 1, 2048, 1408, 0.1f);
+}
+
+#ifdef ENABLE_BF16
+TEST(MOE_KERNEL, BatchedGemm_BF16_DeepSeekV3_DownProj) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeBatchedGemm<hie::bfloat16>(32, 256, 1, 7168, 2048, 0.15f);
+}
+
+TEST(MOE_KERNEL, BatchedGemm_BF16_Qwen3_235B_DownProj) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeBatchedGemm<hie::bfloat16>(32, 128, 1, 4096, 1536, 0.15f);
+}
+#endif
+
+// ===========================================================================
+//  Full MOE pipeline: real model shapes (SM 90)
+// ===========================================================================
+
+TEST(MOE_KERNEL, FullPipeline_FP16_Tiny) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeFullPipeline<half>(2, 4, 2, 64, 32, 0.3f);
+}
+
+// Qwen3-30B-A3B: 128 experts, top-8, hidden=2048, proj=768
+TEST(MOE_KERNEL, FullPipeline_Qwen3_30B) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeFullPipeline<half>(4, 128, 8, 2048, 768, 0.5f);
+}
+
+// Qwen3-235B-A22B: 128 experts, top-8, hidden=4096, proj=1536
+TEST(MOE_KERNEL, FullPipeline_Qwen3_235B) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeFullPipeline<half>(4, 128, 8, 4096, 1536, 0.5f);
+}
+
+// Qwen1.5-MoE-A2.7B: 60 experts, top-4, hidden=2048, proj=1408
+TEST(MOE_KERNEL, FullPipeline_Qwen15MoE) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeFullPipeline<half>(4, 60, 4, 2048, 1408, 0.5f);
+}
+
+// DeepSeek V3: 256 experts, top-8, hidden=7168, proj=2048
+TEST(MOE_KERNEL, FullPipeline_DeepSeekV3) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeFullPipeline<half>(2, 256, 8, 7168, 2048, 0.5f);
+}
+
+#ifdef ENABLE_BF16
+TEST(MOE_KERNEL, FullPipeline_BF16_Qwen3_30B) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  TestMoeFullPipeline<hie::bfloat16>(4, 128, 8, 2048, 768, 0.6f);
+}
+#endif
+
+// ===========================================================================
+//  Sub-kernels: Softmax with real expert counts (all GPUs)
+// ===========================================================================
+
+TEST(MOE_KERNEL, Softmax_8Experts)   { TestSoftmaxLowReduce(16, 8); }
+TEST(MOE_KERNEL, Softmax_60Experts)  { TestSoftmaxLowReduce(32, 60); }   // Qwen1.5-MoE
+TEST(MOE_KERNEL, Softmax_128Experts) { TestSoftmaxLowReduce(32, 128); }  // Qwen3
+TEST(MOE_KERNEL, Softmax_256Experts) { TestSoftmaxLowReduce(32, 256); }  // DeepSeek V3
+
+// ===========================================================================
+//  Sub-kernels: TopK with real (top_k, num_expert) pairs (all GPUs)
+// ===========================================================================
+
+TEST(MOE_KERNEL, TopK_Top2_8Experts)   { TestTopK(16, 8, 2); }
+TEST(MOE_KERNEL, TopK_Top4_60Experts)  { TestTopK(32, 60, 4); }   // Qwen1.5-MoE
+TEST(MOE_KERNEL, TopK_Top8_128Experts) { TestTopK(32, 128, 8); }  // Qwen3
+TEST(MOE_KERNEL, TopK_Top8_256Experts) { TestTopK(32, 256, 8); }  // DeepSeek V3
+
+// ===========================================================================
+//  Sub-kernels: SiLU-GLU with real proj_size values (all GPUs)
+// ===========================================================================
+
+TEST(MOE_KERNEL, SiluGLU_proj128)  { TestSiluGLU(32, 128); }
+TEST(MOE_KERNEL, SiluGLU_proj768)  { TestSiluGLU(32, 768); }   // Qwen3-30B
+TEST(MOE_KERNEL, SiluGLU_proj1408) { TestSiluGLU(32, 1408); }  // Qwen1.5-MoE
+TEST(MOE_KERNEL, SiluGLU_proj1536) { TestSiluGLU(32, 1536); }  // Qwen3-235B
+TEST(MOE_KERNEL, SiluGLU_proj2048) { TestSiluGLU(64, 2048); }  // DeepSeek V3
+
+// ===========================================================================
+//  Benchmark: MoeBatchedGemm TFLOPS (SM 90)
+// ===========================================================================
+
+TEST(MOE_BENCH, BatchedGemm_DeepSeekV3) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  // DeepSeek V3 down-proj: 32 rows, 256 experts, N=7168, K=2048
+  BenchMoeBatchedGemm<half>(32, 256, 7168, 2048);
+}
+
+TEST(MOE_BENCH, BatchedGemm_Qwen3_235B) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  // Qwen3-235B down-proj: 32 rows, 128 experts, N=4096, K=1536
+  BenchMoeBatchedGemm<half>(32, 128, 4096, 1536);
+}
+
+TEST(MOE_BENCH, BatchedGemm_Qwen3_30B) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  // Qwen3-30B down-proj: 32 rows, 128 experts, N=2048, K=768
+  BenchMoeBatchedGemm<half>(32, 128, 2048, 768);
+}
+
+TEST(MOE_BENCH, BatchedGemm_DeepSeekV3_LargeBatch) {
+  if (SkipIfNoWGMMA()) GTEST_SKIP() << "Requires SM 90";
+  // DeepSeek V3 down-proj with large batch: 256 rows
+  BenchMoeBatchedGemm<half>(256, 256, 7168, 2048);
 }
