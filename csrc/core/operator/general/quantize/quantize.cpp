@@ -11,7 +11,9 @@
 #include <cuda/cuda_context.h>
 #endif
 #include <cpu/cpu_context.h>
+#ifdef ENABLE_DNNL
 using dnnl::memory;
+#endif
 namespace allspark {
 AsStatus QuantizeOp::Init(const OperatorProto& op_proto,
                           const DeviceContext& ctx,

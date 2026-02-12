@@ -13,7 +13,9 @@
 #include <cuda/gpuinfo.h>
 #endif
 #include <cpu/cpu_context.h>
+#ifdef ENABLE_DNNL
 using dnnl::memory;
+#endif
 namespace allspark {
 AsStatus DynamicQuantizeMatmulFusedOp::Init(const OperatorProto& op_proto,
                                             const DeviceContext& ctx,

@@ -11,7 +11,9 @@
 #include <cuda/cuda_context.h>
 #endif
 #include <cpu/cpu_context.h>
+#ifdef ENABLE_DNNL
 using dnnl::memory;
+#endif
 
 namespace allspark {
 AsStatus UnaryOp::Init(const OperatorProto& op_proto, const DeviceContext& ctx,
@@ -30,6 +32,7 @@ AsStatus UnaryOp::Init(const OperatorProto& op_proto, const DeviceContext& ctx,
   DeviceType backend = ctx.GetDeviceType();
   switch (backend) {
     case DeviceType::CPU: {
+#ifdef ENABLE_DNNL
       dnnl_op_ctx_ = std::make_unique<DNNLOpContext>();
       auto& algo_map = DNNLOpContext::unary_algo_map_;
       if (algo_map.find(unary_type_) == algo_map.end()) {
@@ -41,6 +44,7 @@ AsStatus UnaryOp::Init(const OperatorProto& op_proto, const DeviceContext& ctx,
       dnnl_op_ctx_->pr_fwd_.resize(1);
       dnnl_op_ctx_->ins_.resize(1);
       dnnl_op_ctx_->outs_.resize(1);
+#endif  // ENABLE_DNNL
       break;
     }
 #ifdef ENABLE_CUDA
@@ -59,6 +63,7 @@ AsStatus UnaryOp::Reshape() {
   Shape out_shape = tensor_map_->at(in_names_[0])->GetShape();
   AS_CHECK_STATUS(
       tensor_map_->at(out_names_[0])->SetShape(std::move(out_shape)));
+#ifdef ENABLE_DNNL
   if (ctx_->GetDeviceType() == DeviceType::CPU) {
     auto eng = DNNLEngine::GetInstance().GetEngine();
     memory::desc data_desc({out_shape.Count()}, memory::data_type::f32,
@@ -70,6 +75,7 @@ AsStatus UnaryOp::Reshape() {
             eng, dnnl::prop_kind::forward_inference, dnnl_op_ctx_->algo_,
             data_desc, data_desc, 0.f, 0.f});
   }
+#endif  // ENABLE_DNNL
   return AsStatus::ALLSPARK_SUCCESS;
 }
 AsStatus UnaryOp::Forward() {
@@ -91,6 +97,7 @@ AsStatus UnaryOp::Forward() {
     }
 #endif
     case DeviceType::CPU: {
+#ifdef ENABLE_DNNL
       dnnl::memory& in_mem = *(dnnl_op_ctx_->ins_[0]);
       dnnl::memory& out_mem = *(dnnl_op_ctx_->outs_[0]);
       const CPUContext* cpu_ctx = static_cast<const CPUContext*>(ctx_);
@@ -99,6 +106,10 @@ AsStatus UnaryOp::Forward() {
       std::unordered_map<int, memory> args{{DNNL_ARG_SRC, in_mem},
                                            {DNNL_ARG_DST, out_mem}};
       dnnl_op_ctx_->pr_fwd_[0]->execute(cpu_ctx->GetStream(), args);
+#else
+      LOG(ERROR) << "Unary CPU operator requires DNNL support." << std::endl;
+      return AsStatus::ALLSPARK_RUNTIME_ERROR;
+#endif  // ENABLE_DNNL
       break;
     }
     default:

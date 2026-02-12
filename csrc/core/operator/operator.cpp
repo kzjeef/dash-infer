@@ -37,6 +37,7 @@ void ValidateNumeric(const AsTensor* tensor_ptr) {
 }
 #endif
 
+#ifdef ENABLE_DNNL
 std::map<UnaryType, dnnl::algorithm> DNNLOpContext::unary_algo_map_ = {
     {UnaryType::TANH, dnnl::algorithm::eltwise_tanh},
     {UnaryType::GELU_ERF, dnnl::algorithm::eltwise_gelu_erf},
@@ -54,6 +55,7 @@ std::map<BinaryType, dnnl::algorithm> DNNLOpContext::binary_algo_map_ = {
      dnnl::algorithm::binary_mul}  // swiglu is not defined in dnnl, use mul
                                    // instead
 };
+#endif  // ENABLE_DNNL
 AsOperator::AsOperator(const std::string& op_type)
     : op_type_(op_type), tensor_map_(nullptr), ctx_(nullptr) {}
 

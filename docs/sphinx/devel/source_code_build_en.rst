@@ -141,6 +141,8 @@ Build Python Package
   - We use CUDA 12.4 as the default CUDA version. If you want to change to a different version, set ``AS_CUDA_VERSION`` to the target CUDA version.
   - Set ``AS_RELEASE_VERSION`` enviroment variable to change package version.
   - Set ``ENABLE_MULTINUMA=ON`` enviroment variable to enable multi-NUMA inference in CPU-only version.
+  - Set ``AS_NCCL_FROM_SOURCE=ON`` to build NCCL from GitHub source instead of using a pre-installed system library.
+  - Set ``AS_ENABLE_DNNL=OFF`` to disable oneDNN (DNNL) to reduce compile time and binary size. DNNL is disabled by default for CUDA builds and enabled by default for CPU/ARM builds.
 
 
 Build C++ Libraries
@@ -167,6 +169,76 @@ Build C++ Libraries
   export PATH=$PATH:$ARM_COMPILER_ROOT/bin
 
   AS_PLATFORM="armclang" AS_BUILD_PACKAGE="ON" ./build.sh
+
+
+Build Options
+,,,,,,,,,,,,,
+
+The following environment variables can be used to customize the build:
+
+.. list-table:: Build Environment Variables
+   :widths: 15 10 5 30
+   :header-rows: 1
+
+   * - Variable
+     - Default
+     - Type
+     - Description
+
+   * - ``AS_PLATFORM``
+     - ``cuda``
+     - string
+     - Target platform: ``cuda``, ``x86``, or ``armclang``.
+
+   * - ``AS_CUDA_VERSION``
+     - ``12.9``
+     - string
+     - CUDA toolkit version.
+
+   * - ``AS_CUDA_SM``
+     - ``80;90a``
+     - string
+     - Target CUDA compute capabilities (semicolon-separated).
+
+   * - ``AS_NCCL_VERSION``
+     - ``2.23.4``
+     - string
+     - NCCL version to use.
+
+   * - ``AS_NCCL_FROM_SOURCE``
+     - ``OFF``
+     - bool
+     - When ``ON``, download and build NCCL from GitHub source automatically.
+       Useful when no pre-installed NCCL is available.
+       If the system NCCL is not found, source build is triggered automatically.
+
+   * - ``AS_ENABLE_DNNL``
+     - ``OFF`` (CUDA) / ``ON`` (CPU/ARM)
+     - bool
+     - Enable or disable oneDNN (DNNL) support.
+       DNNL is only used by CPU operators and is not needed for GPU-only deployment.
+       Disabling it reduces compile time and binary size.
+
+   * - ``AS_SYSTEM_NV_LIB``
+     - ``OFF``
+     - bool
+     - When ``ON``, use system-installed NVIDIA libraries (NCCL, cuSPARSELt, etc.)
+       instead of downloading them.
+
+   * - ``AS_BUILD_TYPE``
+     - ``Release``
+     - string
+     - CMake build type: ``Release``, ``Debug``, ``RelWithDebInfo``.
+
+   * - ``AS_CXX11_ABI``
+     - ``OFF``
+     - bool
+     - Enable ``_GLIBCXX_USE_CXX11_ABI=1`` for newer C++ ABI compatibility.
+
+   * - ``ENABLE_MULTINUMA``
+     - ``OFF``
+     - bool
+     - Enable multi-NUMA inference support (CPU-only).
 
 Profiling
 ---------

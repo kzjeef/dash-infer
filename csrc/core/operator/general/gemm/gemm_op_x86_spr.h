@@ -16,10 +16,12 @@ namespace allspark {
 class GemmOpSpr : public GemmOpCPU {
  public:
   GemmOpSpr(const std::string& op_type = "") : GemmOpCPU(op_type) {
+#ifdef ENABLE_DNNL
     dnnl::cpu_isa eff_isa = dnnl::get_effective_cpu_isa();
     if (eff_isa >= dnnl::cpu_isa::avx512_core_amx) {
       is_spr_ = true;
     }
+#endif
   }
 
   AsStatus Init(const OperatorProto& op_proto, const DeviceContext& ctx,

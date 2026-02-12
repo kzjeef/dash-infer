@@ -26,6 +26,6 @@ TEST(AsEngine, SetNumThreads) {
 TEST(AsEngine, GetDeviceSMVersion) {
   int sm_version = allspark::CUDAContext::GetStreamProcessorVersion(0);
   EXPECT_GE(sm_version, allspark::CUDASMDef::SM_Volta);
-  EXPECT_LE(sm_version, allspark::CUDASMDef::SM_90);
+  EXPECT_LE(sm_version, allspark::CUDASMDef::SM_Blackwell);
 }
 #endif

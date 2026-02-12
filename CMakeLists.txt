@@ -49,6 +49,13 @@ option(BUILD_HIEDNN "build HIE-DNN from source" OFF)
 option(ENABLE_CUDA_PINNED_WEIGHT_LOAD "enable cuda pinned memory for load weight" OFF)
 option(ENABLE_SPAN_ATTENTION "enable build with span attention" ON)
 option(ENABLE_MULTINUMA "enable multinuma, if on cpu multinuma service will be compiled" OFF)
+
+## DNNL (oneDNN) option: default OFF for CUDA builds, ON for CPU/ARM builds
+if(CONFIG_ACCELERATOR_TYPE STREQUAL "CUDA")
+  option(ENABLE_DNNL "Build with oneDNN (DNNL) support" OFF)
+else()
+  option(ENABLE_DNNL "Build with oneDNN (DNNL) support" ON)
+endif()
 # set var let cmake module can get this var.
 set(USE_SYSTEM_NV_LIB ${USE_SYSTEM_NV_LIB})
 set(ENABLE_NV_STATIC_LIB ${ENABLE_NV_STATIC_LIB})
@@ -150,7 +157,13 @@ if (ENABLE_ARMCL)
 endif()
 
 include(AutoCCache)
-include(dnnl)
+if(ENABLE_DNNL)
+  include(dnnl)
+  list(APPEND ALLSPARK_DEFINITION "-DENABLE_DNNL")
+  message(STATUS "DNNL (oneDNN) support: ON")
+else()
+  message(STATUS "DNNL (oneDNN) support: OFF")
+endif()
 include(cblas)
 
 if (ENABLE_JSON_MODE)

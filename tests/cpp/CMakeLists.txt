@@ -1,7 +1,12 @@
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/test_common.h.in
                ${CMAKE_CURRENT_BINARY_DIR}/test_common.h)
 add_library(test_as_common test_common.cpp)
-target_link_libraries(test_as_common allspark_framework CONAN_PKG::gtest CONAN_PKG::glog CONAN_PKG::zlib ${ONEDNN_LIBRARY} ${CUDA_3RD_PARTY_LIBS} ${THREAD_LIB})
+if(ENABLE_DNNL)
+  set(_TEST_DNNL_LIB ${ONEDNN_LIBRARY})
+else()
+  set(_TEST_DNNL_LIB "")
+endif()
+target_link_libraries(test_as_common allspark_framework CONAN_PKG::gtest CONAN_PKG::glog CONAN_PKG::zlib ${_TEST_DNNL_LIB} ${CUDA_3RD_PARTY_LIBS} ${THREAD_LIB})
 set_target_properties(test_as_common PROPERTIES CXX_STANDARD ${CXX_STD})
 
 if (MEM_CHECK)

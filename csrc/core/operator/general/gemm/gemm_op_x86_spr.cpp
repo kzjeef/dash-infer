@@ -14,9 +14,13 @@
 #include "bgemm_f32bf16f32_simple.h"
 #include "hgemm_f32f16f32_simple.h"
 
+#ifdef ENABLE_DNNL
 using dnnl::memory;
 using tag = memory::format_tag;
 #define USE_ONEDNN_BF16_GEMM 1
+#else
+#define USE_ONEDNN_BF16_GEMM 0
+#endif
 namespace allspark {
 
 template <typename T1, typename T2>
@@ -97,7 +101,7 @@ AsStatus GemmOpSpr::InitV2(const OperatorProto& op_proto,
     mutable_weight->SetName(as_weight_pack->GetName());
     mutable_weight->SetDataType(DataType::BFLOAT16);
     mutable_weight->SetShape(std::move(weight_shape));
-    TensorUtils::DeepCopyWholeAsync(*mutable_weight, *as_weight_pack, ctx);
+    TensorUtils::DeepCopyWholeAsync(*mutable_weight, *as_weight_pack, &ctx);
 #endif
 #endif
   } else if (weight_data_type_ == DataType::FLOAT16) {
@@ -190,7 +194,7 @@ AsStatus GemmOpSpr::Forward(RuntimeContext* runtime_ctx) {
       } else if (binary_type_ == BinaryType::ADD) {
         ig_bgemm_f32bf16f32_compute_residential(
             transB_, m_, n_, k_, 1.0f, (const float*)in, lda_,
-            (const float16_t*)weight->GetDataPtr(), 0.0f, (float*)out, ldc_,
+            (const bfloat16_t*)weight->GetDataPtr(), 0.0f, (float*)out, ldc_,
             (const float*)bias, (const float*)bin_in, ldc_);
       } else if (binary_type_ == BinaryType::MUL) {
         LOG(ERROR) << "Unsupported matmul precision with binary_type MUL";
@@ -210,12 +214,12 @@ AsStatus GemmOpSpr::Forward(RuntimeContext* runtime_ctx) {
       } else if (binary_type_ == BinaryType::ADD) {
         ig_bgemm_f32bf16f32_compute_residential(
             transB_, m_, n_, k_, 1.0f, (const float*)in, lda_,
-            (const float16_t*)weight->GetDataPtr(), 0.0f, (float*)out, ldc_,
+            (const bfloat16_t*)weight->GetDataPtr(), 0.0f, (float*)out, ldc_,
             (const float*)bias, (const float*)bin_in, ldc_);
       } else if (binary_type_ == BinaryType::MUL) {
         ig_bgemm_f32bf16f32_compute_resmul(
             transB_, m_, n_, k_, 1.0f, (const float*)in, lda_,
-            (const float16_t*)weight->GetDataPtr(), 0.0f, (float*)out, ldc_,
+            (const bfloat16_t*)weight->GetDataPtr(), 0.0f, (float*)out, ldc_,
             (const float*)bin_in, ldc_);
       } else {
         ig_bgemm_f32bf16f32_compute(

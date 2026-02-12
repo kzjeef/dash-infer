@@ -92,6 +92,7 @@ class CMakeBuild(build_ext):
             "-DBUILD_HIEDNN=" + as_build_hiednn,
             "-DENABLE_SPAN_ATTENTION=" + as_span_attn,
             "-DENABLE_JSON_MODE=ON",
+            "-DENABLE_DNNL=OFF",
             "-DENABLE_GLIBCXX11_ABI=" + enable_glibcxx11_abi,
             "-DENABLE_MULTINUMA=OFF",
         ]

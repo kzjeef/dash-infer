@@ -7,7 +7,9 @@
 
 #include <core/operator/operator.h>
 
+#ifdef ENABLE_DNNL
 #include <dnnl.hpp>
+#endif
 
 namespace allspark {
 

@@ -124,9 +124,14 @@ list(APPEND ALLSPARK_SRCS ${PROTO_SRCS})
 add_library(allspark_objects OBJECT ${ALLSPARK_SRCS})
 set_target_properties(allspark_objects PROPERTIES CXX_STANDARD ${CXX_STD})  # c17 for cutlass.
 set_target_properties(allspark_objects PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(ENABLE_DNNL)
+  set(_DNNL_LINK_LIB ${ONEDNN_LIBRARY})
+else()
+  set(_DNNL_LINK_LIB "")
+endif()
 target_link_libraries(allspark_objects
     PRIVATE
-        ${ONEDNN_LIBRARY}
+        ${_DNNL_LINK_LIB}
         git_version
         stdc++fs
         allspark_kernel
@@ -159,7 +164,9 @@ if (ENABLE_CUDA_PINNED_WEIGHT_LOAD)
     target_compile_definitions(allspark_objects PRIVATE -DENABLE_CUDA_PINNED_WEIGHT)
 endif()
 
-add_dependencies(allspark_objects project_dnnl)
+if(ENABLE_DNNL)
+  add_dependencies(allspark_objects project_dnnl)
+endif()
 
 if (ENABLE_CUDA)
 if(${CUDA_VERSION} VERSION_GREATER_EQUAL "11.8")

@@ -133,3 +133,97 @@ Engine Behavior
      - ``1``: disable warm up
 
        ``0``: not disable warm up
+
+
+Build-time Options
+==================
+
+The following environment variables control the build process (used with ``build.sh`` or ``python setup.py``).
+
+.. list-table:: Environment Var: Build Options
+   :widths: 10 15 5 5 25
+   :header-rows: 1
+
+   * - EnvVar Name
+     - Describe
+     - Type
+     - Default
+     - Options
+
+   * - ``AS_PLATFORM``
+     - Target build platform.
+     - string
+     - ``cuda``
+     - ``cuda`` - GPU build
+
+       ``x86`` - CPU x86 build
+
+       ``armclang`` - CPU ARM build
+
+   * - ``AS_CUDA_VERSION``
+     - CUDA toolkit version to build against.
+     - string
+     - ``12.9``
+     - e.g. ``11.8``, ``12.4``
+
+   * - ``AS_CUDA_SM``
+     - Target CUDA compute capabilities.
+     - string
+     - ``80;90a``
+     - Semicolon-separated, e.g. ``'80;86;89;90a'``
+
+   * - ``AS_NCCL_VERSION``
+     - NCCL library version.
+     - string
+     - ``2.23.4``
+     - e.g. ``2.23.4``, ``2.29.3``
+
+   * - ``AS_NCCL_FROM_SOURCE``
+     - Build NCCL from GitHub source code.
+
+       When OFF, if system NCCL is not found,
+
+       source build is triggered automatically.
+     - bool
+     - ``OFF``
+     - ``ON`` - always build from source
+
+       ``OFF`` - try system first, fallback to source
+
+   * - ``AS_ENABLE_DNNL``
+     - Enable oneDNN (DNNL) library.
+
+       DNNL is only used by CPU operators.
+
+       Disabling reduces compile time and .so size.
+     - bool
+     - ``OFF`` (cuda) / ``ON`` (cpu/arm)
+     - ``ON`` - build and link DNNL
+
+       ``OFF`` - skip DNNL entirely
+
+   * - ``AS_SYSTEM_NV_LIB``
+     - Use system-installed NVIDIA libraries
+
+       (NCCL, cuSPARSELt, etc.) instead of downloading.
+     - bool
+     - ``OFF``
+     - ``ON`` / ``OFF``
+
+   * - ``AS_BUILD_TYPE``
+     - CMake build type.
+     - string
+     - ``Release``
+     - ``Release``, ``Debug``, ``RelWithDebInfo``
+
+   * - ``AS_CXX11_ABI``
+     - Enable _GLIBCXX_USE_CXX11_ABI=1.
+     - bool
+     - ``OFF``
+     - ``ON`` / ``OFF``
+
+   * - ``ENABLE_MULTINUMA``
+     - Enable multi-NUMA inference (CPU-only).
+     - bool
+     - ``OFF``
+     - ``ON`` / ``OFF``

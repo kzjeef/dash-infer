@@ -10,9 +10,12 @@
 #include <common/device_context.h>
 #include <core/kernel/cpu/cpu_common.h>
 
+#ifdef ENABLE_DNNL
 #include <dnnl.hpp>
+#endif
 namespace allspark {
 
+#ifdef ENABLE_DNNL
 class DNNLEngine {
  public:
   static DNNLEngine& GetInstance() {
@@ -32,10 +35,15 @@ class DNNLEngine {
  private:
   dnnl::engine dnnl_engine_;
 };
+#endif  // ENABLE_DNNL
 
 class CPUContext : public DeviceContext {
  public:
+#ifdef ENABLE_DNNL
   CPUContext() : cpu_id_(0), stream_(DNNLEngine::GetInstance().GetEngine()) {}
+#else
+  CPUContext() : cpu_id_(0) {}
+#endif
 
   virtual void Init() override {
     int nthread = cpu::get_max_threads();
@@ -60,6 +68,7 @@ class CPUContext : public DeviceContext {
 
   int GetNumThread() const { return nthread_; }
 
+#ifdef ENABLE_DNNL
   dnnl::stream& GetStream() { return stream_; }
 
   const dnnl::stream& GetStream() const { return stream_; }
@@ -68,6 +77,9 @@ class CPUContext : public DeviceContext {
     dnnl::stream* s_ptr = const_cast<dnnl::stream*>(&stream_);
     s_ptr->wait();
   }
+#else
+  void Synchronize() const { /* no-op without DNNL */ }
+#endif
 
   Block::Ptr AllocBlock(int64_t nbytes) { return allocator_.Alloc(nbytes, 0); }
 
@@ -89,7 +101,9 @@ class CPUContext : public DeviceContext {
 #if AS_RUNTIME_THREAD == AS_TBB
   std::unique_ptr<global_control> global_limit_;
 #endif
+#ifdef ENABLE_DNNL
   dnnl::stream stream_;
+#endif
 #define TENSOR_ALIGN_IN_BYTES_CPU (256)
   using CPUBlock = BlockImpl<DeviceType::CPU, TENSOR_ALIGN_IN_BYTES_CPU>;
 #undef TENSOR_ALIGN_IN_BYTES_CPU

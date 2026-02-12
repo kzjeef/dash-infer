@@ -10,7 +10,9 @@
 #include <core/tensor/tensor.h>
 #include <utility/model_profiler.h>
 
+#ifdef ENABLE_DNNL
 #include <dnnl.hpp>
+#endif
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -22,6 +24,7 @@ class ModelWeightHandler;
 class WeightManager;
 class LoraManager;
 
+#ifdef ENABLE_DNNL
 struct DNNLOpContext {
   std::vector<std::unique_ptr<dnnl::primitive>> pr_fwd_;
   std::vector<std::unique_ptr<dnnl::memory>> ins_;
@@ -31,6 +34,7 @@ struct DNNLOpContext {
   static std::map<UnaryType, dnnl::algorithm> unary_algo_map_;
   static std::map<BinaryType, dnnl::algorithm> binary_algo_map_;
 };
+#endif  // ENABLE_DNNL
 
 /*!
  * @brief Operator base class
@@ -115,7 +119,9 @@ class AsOperator {
                            // output tensor.
   std::vector<TensorListMap>* embedding_map_;
   const DeviceContext* ctx_;
+#ifdef ENABLE_DNNL
   std::unique_ptr<DNNLOpContext> dnnl_op_ctx_;
+#endif
   ModelProfiler* profiler_ = nullptr;
   std::shared_ptr<ModelWeightHandler> weight_handler_;
   std::shared_ptr<WeightManager> weight_manager_;

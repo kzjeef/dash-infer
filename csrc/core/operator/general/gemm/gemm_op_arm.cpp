@@ -11,7 +11,9 @@
 #include <cpu/cpu_context.h>
 #include <utility/datatype_dispatcher.h>
 
+#ifdef ENABLE_DNNL
 using dnnl::memory;
+#endif
 namespace allspark {
 AsStatus GemmOpARM::Init(const OperatorProto& op_proto,
                          const DeviceContext& ctx, const TensorMap& weights_map,

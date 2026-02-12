@@ -11,7 +11,9 @@
 #include <cuda/cuda_context.h>
 #endif
 #include <cpu/cpu_context.h>
+#ifdef ENABLE_DNNL
 using dnnl::memory;
+#endif
 
 namespace allspark {
 AsStatus UnaryGLUOp::Init(const OperatorProto& op_proto,
@@ -31,6 +33,7 @@ AsStatus UnaryGLUOp::Init(const OperatorProto& op_proto,
   DeviceType backend = ctx.GetDeviceType();
   switch (backend) {
     case DeviceType::CPU: {
+#ifdef ENABLE_DNNL
       dnnl_op_ctx_ = std::make_unique<DNNLOpContext>();
       auto& algo_map = DNNLOpContext::unary_algo_map_;
       if (algo_map.find(unary_type_) == algo_map.end()) {
@@ -42,6 +45,7 @@ AsStatus UnaryGLUOp::Init(const OperatorProto& op_proto,
       dnnl_op_ctx_->pr_fwd_.resize(1);
       dnnl_op_ctx_->ins_.resize(1);
       dnnl_op_ctx_->outs_.resize(1);
+#endif  // ENABLE_DNNL
       break;
     }
 #ifdef ENABLE_CUDA

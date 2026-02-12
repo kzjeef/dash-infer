@@ -34,6 +34,8 @@ enum CUDASMDef : int {
   SM_86 = 0x0860,
   SM_Hopper = 0x0900,
   SM_90 = 0x0900,
+  SM_Blackwell = 0x0a00,
+  SM_100 = 0x0a00,
   SM_MAX = -1,
 };
 

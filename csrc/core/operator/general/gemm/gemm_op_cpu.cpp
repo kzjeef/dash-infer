@@ -9,13 +9,11 @@
 #include <cpu/cpu_context.h>
 #include <utility/datatype_dispatcher.h>
 
+#ifdef ENABLE_DNNL
 using dnnl::memory;
 using tag = memory::format_tag;
+#endif
 namespace allspark {
-
-inline bool UseOneDnn(int batch, float alpha) {
-  return batch == 1 && alpha == 1.0f;
-}
 
 AsStatus GemmOpCPU::Init(const OperatorProto& op_proto,
                          const DeviceContext& ctx, const TensorMap& weights_map,
@@ -29,6 +27,7 @@ AsStatus GemmOpCPU::InitV2(const OperatorProto& op_proto,
                            const TensorMap& weights_map,
                            TensorMap& weights_buffer, TensorMap* tensor_map,
                            RuntimeContext* runtime_ctx) {
+#ifdef ENABLE_DNNL
   AS_CHECK_STATUS(GemmOpBase::InitV2(op_proto, ctx, weights_map, weights_buffer,
                                      tensor_map, runtime_ctx));
 
@@ -71,8 +70,13 @@ AsStatus GemmOpCPU::InitV2(const OperatorProto& op_proto,
   }
   dnnl_op_ctx_->attr_->set_post_ops(po);
   return AsStatus::ALLSPARK_SUCCESS;
+#else
+  LOG(ERROR) << "GemmOpCPU requires DNNL support." << std::endl;
+  return AsStatus::ALLSPARK_RUNTIME_ERROR;
+#endif  // ENABLE_DNNL
 }
 AsStatus GemmOpCPU::Reshape(RuntimeContext* runtime_ctx) {
+#ifdef ENABLE_DNNL
   int yn = n_;
   AS_CHECK_STATUS(GemmOpBase::Reshape(yn));
 
@@ -164,9 +168,14 @@ AsStatus GemmOpCPU::Reshape(RuntimeContext* runtime_ctx) {
 #endif
   }
   return AsStatus::ALLSPARK_SUCCESS;
+#else
+  LOG(ERROR) << "GemmOpCPU requires DNNL support." << std::endl;
+  return AsStatus::ALLSPARK_RUNTIME_ERROR;
+#endif  // ENABLE_DNNL
 }
 
 AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
+#ifdef ENABLE_DNNL
   AsTensor* in_tensor = tensor_map_->at(in_names_[0]).get();
   void* in = in_tensor->GetDataPtr();
   void* out = tensor_map_->at(out_names_[0])->GetDataPtr();
@@ -213,6 +222,10 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
         .execute(cpu_ctx->GetStream(), y_mem, y_out_mem);
   }
   return AsStatus::ALLSPARK_SUCCESS;
+#else
+  LOG(ERROR) << "GemmOpCPU requires DNNL support." << std::endl;
+  return AsStatus::ALLSPARK_RUNTIME_ERROR;
+#endif  // ENABLE_DNNL
 }
 
 }  // namespace allspark
