@@ -104,16 +104,24 @@ function(set_cuda_arch)
     list(REMOVE_DUPLICATES CUDA_BUILD_CC)
     list(SORT CUDA_BUILD_CC)
 
-    # CC for binary
+    # CC for binary (SASS)
+    set(FIRST_CC "")
     foreach(BIN_CC ${CUDA_BUILD_CC})
         set(NVCC_ARCH_FLAGS
             "${NVCC_ARCH_FLAGS} -gencode arch=compute_${BIN_CC},code=sm_${BIN_CC}")
-        set(PTX_CC ${BIN_CC})
+        if("${FIRST_CC}" STREQUAL "")
+            set(FIRST_CC ${BIN_CC})
+        endif()
     endforeach()
 
-    # CC for PTX
+    # CC for PTX: use the lowest non-arch-specific CC only for forward compatibility.
+    # Do NOT generate PTX for arch-specific variants (e.g., 90a) because their PTX
+    # contains specialized instructions (wgmma, etc.) that fail to JIT-compile on
+    # newer architectures (e.g., Blackwell SM100). The CUDA runtime picks the highest
+    # matching PTX, so only embedding compute_80 PTX ensures safe JIT on any future GPU.
+    string(REGEX MATCH "^[0-9]+" FIRST_CC_BASE "${FIRST_CC}")
     set(NVCC_ARCH_FLAGS
-        "${NVCC_ARCH_FLAGS} -gencode arch=compute_${PTX_CC},code=compute_${PTX_CC}")
+        "${NVCC_ARCH_FLAGS} -gencode arch=compute_${FIRST_CC_BASE},code=compute_${FIRST_CC_BASE}")
 
     message(STATUS "CUDA gencode flags: " ${NVCC_ARCH_FLAGS})
     set(CMAKE_CUDA_FLAGS ${CMAKE_CUDA_FLAGS} ${NVCC_ARCH_FLAGS} PARENT_SCOPE)

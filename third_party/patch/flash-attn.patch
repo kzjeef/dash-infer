@@ -36,9 +36,14 @@ index 0000000..a9f28f7
 +  list(APPEND GENCODES "${arch}-real")
 +endforeach()
 +
-+# Generate PTX for the last architecture
-+list(GET FLASHATTN_GPU_ARCHS -1 LATEST_GPU_ARCH)
-+list(APPEND GENCODES "${LATEST_GPU_ARCH}-virtual")
++# Generate PTX for the lowest non-arch-specific architecture only.
++# This ensures forward compatibility via JIT on newer GPUs (e.g., Blackwell SM100).
++# We intentionally do NOT generate PTX for arch-specific variants (e.g., 90a)
++# because their PTX contains specialized instructions (wgmma, etc.) that fail
++# to JIT-compile on architectures that don't support them.
++list(GET FLASHATTN_GPU_ARCHS 0 LOWEST_GPU_ARCH)
++string(REGEX MATCH "^[0-9]+" LOWEST_GPU_ARCH_BASE "${LOWEST_GPU_ARCH}")
++list(APPEND GENCODES "${LOWEST_GPU_ARCH_BASE}-virtual")
 +set(CMAKE_CUDA_ARCHITECTURES ${GENCODES})
 +
 +find_package(CUDAToolkit ${FLASHATTN_CUDA_VERSION} EXACT REQUIRED)

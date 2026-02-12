@@ -57,7 +57,7 @@ include(ExternalProject)
     GIT_REPOSITORY ${FLASH_ATTENTION_GIT_REPO}
     GIT_TAG ${FLASH_ATTENTION_GIT_TAG}
     GIT_SUBMODULES ""
-    PATCH_COMMAND git apply --reverse --check ${FLASH_ATTENTION_GIT_PATCH} || git apply ${FLASH_ATTENTION_GIT_PATCH}
+    PATCH_COMMAND git apply --reverse --check ${FLASH_ATTENTION_GIT_PATCH} 2>/dev/null || git apply --check ${FLASH_ATTENTION_GIT_PATCH} 2>/dev/null && git apply ${FLASH_ATTENTION_GIT_PATCH} || true
     PREFIX ${CMAKE_CURRENT_BINARY_DIR}/flash-attention
     SOURCE_SUBDIR csrc
     DEPENDS project_cutlass
