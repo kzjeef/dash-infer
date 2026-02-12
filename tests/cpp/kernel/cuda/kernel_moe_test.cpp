@@ -926,3 +926,204 @@ TEST(MOE_BENCH, BatchedGemm_DeepSeekV3_LargeBatch) {
   // DeepSeek V3 down-proj with large batch: 256 rows
   BenchMoeBatchedGemm<half>(256, 256, 7168, 2048);
 }
+
+// ===========================================================================
+//  Benchmark: Sub-kernels (all GPUs) — bandwidth & throughput
+// ===========================================================================
+
+TEST(MOE_BENCH, Softmax_DeepSeekV3) {
+  const int total_token = 256;
+  const int num_expert = 256;
+  const int warmup = 5, iters = 50;
+
+  std::vector<float> input_f(total_token * num_expert, 1.f);
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+  float *d_in, *d_out;
+  cudaMalloc(&d_in, total_token * num_expert * sizeof(float));
+  cudaMalloc(&d_out, total_token * num_expert * sizeof(float));
+  cudaMemcpy(d_in, input_f.data(), total_token * num_expert * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  for (int i = 0; i < warmup; ++i)
+    allspark::cuda::SoftmaxLowReduceKernelLauncher<float>(
+        d_in, d_out, total_token, num_expert, stream);
+  cudaStreamSynchronize(stream);
+
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, stream);
+  for (int i = 0; i < iters; ++i)
+    allspark::cuda::SoftmaxLowReduceKernelLauncher<float>(
+        d_in, d_out, total_token, num_expert, stream);
+  cudaEventRecord(stop, stream);
+  cudaStreamSynchronize(stream);
+  float ms = 0;
+  cudaEventElapsedTime(&ms, start, stop);
+  float avg_us = ms / iters * 1000.f;
+  // Bandwidth: read + write = 2 * total_token * num_expert * 4 bytes
+  double bytes = 2.0 * total_token * num_expert * sizeof(float);
+  double gbps = bytes / (ms / iters * 1e-3) / 1e9;
+  printf("  Softmax(tokens=%d, experts=%d): %.1f us, %.1f GB/s\n",
+         total_token, num_expert, avg_us, gbps);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  cudaFree(d_in);
+  cudaFree(d_out);
+  cudaStreamDestroy(stream);
+}
+
+TEST(MOE_BENCH, TopK_DeepSeekV3) {
+  const int total_token = 256;
+  const int num_expert = 256;
+  const int top_k = 8;
+  const int warmup = 5, iters = 50;
+
+  std::vector<float> input_f(total_token * num_expert);
+  {
+    std::default_random_engine gen(42);
+    std::uniform_real_distribution<float> dis(0.f, 1.f);
+    for (auto& v : input_f) v = dis(gen);
+  }
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+  float *d_in, *d_score;
+  int* d_indice;
+  cudaMalloc(&d_in, total_token * num_expert * sizeof(float));
+  cudaMalloc(&d_score, total_token * top_k * sizeof(float));
+  cudaMalloc(&d_indice, total_token * top_k * sizeof(int));
+  cudaMemcpy(d_in, input_f.data(), total_token * num_expert * sizeof(float),
+             cudaMemcpyHostToDevice);
+
+  for (int i = 0; i < warmup; ++i)
+    allspark::cuda::TopKKernelLauncher<float>(d_score, d_indice, d_in,
+                                              total_token, num_expert, top_k,
+                                              stream);
+  cudaStreamSynchronize(stream);
+
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, stream);
+  for (int i = 0; i < iters; ++i)
+    allspark::cuda::TopKKernelLauncher<float>(d_score, d_indice, d_in,
+                                              total_token, num_expert, top_k,
+                                              stream);
+  cudaEventRecord(stop, stream);
+  cudaStreamSynchronize(stream);
+  float ms = 0;
+  cudaEventElapsedTime(&ms, start, stop);
+  float avg_us = ms / iters * 1000.f;
+  printf("  TopK(tokens=%d, experts=%d, top_k=%d): %.1f us\n", total_token,
+         num_expert, top_k, avg_us);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  cudaFree(d_in);
+  cudaFree(d_score);
+  cudaFree(d_indice);
+  cudaStreamDestroy(stream);
+}
+
+TEST(MOE_BENCH, SiluGLU_DeepSeekV3) {
+  const int M = 256;  // tokens * top_k
+  const int proj_size = 2048;
+  const int warmup = 5, iters = 50;
+
+  auto input_h = common::rand_normal_float<half>(M * proj_size * 2, 0.5f);
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+  half *d_in, *d_out;
+  cudaMalloc(&d_in, M * proj_size * 2 * sizeof(half));
+  cudaMalloc(&d_out, M * proj_size * sizeof(half));
+  cudaMemcpy(d_in, input_h.data(), M * proj_size * 2 * sizeof(half),
+             cudaMemcpyHostToDevice);
+
+  for (int i = 0; i < warmup; ++i)
+    allspark::cuda::UnaryGLUKernelLauncher(d_out, d_in, (size_t)M,
+                                            (size_t)proj_size,
+                                            (int)allspark::UnaryType::SILU,
+                                            stream);
+  cudaStreamSynchronize(stream);
+
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, stream);
+  for (int i = 0; i < iters; ++i)
+    allspark::cuda::UnaryGLUKernelLauncher(d_out, d_in, (size_t)M,
+                                            (size_t)proj_size,
+                                            (int)allspark::UnaryType::SILU,
+                                            stream);
+  cudaEventRecord(stop, stream);
+  cudaStreamSynchronize(stream);
+  float ms = 0;
+  cudaEventElapsedTime(&ms, start, stop);
+  float avg_us = ms / iters * 1000.f;
+  // SiLU-GLU: read 2*proj elements, write 1*proj element per row
+  // FLOPs per element: silu = ~5 ops (exp, add, div), multiply = 1 => ~6 FLOPs
+  double flops = 6.0 * M * proj_size;
+  double gflops = flops / (ms / iters * 1e-3) / 1e9;
+  // Bandwidth: read M*proj*2*2B + write M*proj*2B = M*proj*6B
+  double bytes = (double)M * proj_size * 6;
+  double gbps = bytes / (ms / iters * 1e-3) / 1e9;
+  printf("  SiluGLU(M=%d, proj=%d): %.1f us, %.1f GFLOPS, %.1f GB/s\n", M,
+         proj_size, avg_us, gflops, gbps);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  cudaFree(d_in);
+  cudaFree(d_out);
+  cudaStreamDestroy(stream);
+}
+
+TEST(MOE_BENCH, SiluGLU_Qwen3_235B) {
+  const int M = 256;
+  const int proj_size = 1536;
+  const int warmup = 5, iters = 50;
+
+  auto input_h = common::rand_normal_float<half>(M * proj_size * 2, 0.5f);
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+  half *d_in, *d_out;
+  cudaMalloc(&d_in, M * proj_size * 2 * sizeof(half));
+  cudaMalloc(&d_out, M * proj_size * sizeof(half));
+  cudaMemcpy(d_in, input_h.data(), M * proj_size * 2 * sizeof(half),
+             cudaMemcpyHostToDevice);
+
+  for (int i = 0; i < warmup; ++i)
+    allspark::cuda::UnaryGLUKernelLauncher(d_out, d_in, (size_t)M,
+                                            (size_t)proj_size,
+                                            (int)allspark::UnaryType::SILU,
+                                            stream);
+  cudaStreamSynchronize(stream);
+
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
+  cudaEventRecord(start, stream);
+  for (int i = 0; i < iters; ++i)
+    allspark::cuda::UnaryGLUKernelLauncher(d_out, d_in, (size_t)M,
+                                            (size_t)proj_size,
+                                            (int)allspark::UnaryType::SILU,
+                                            stream);
+  cudaEventRecord(stop, stream);
+  cudaStreamSynchronize(stream);
+  float ms = 0;
+  cudaEventElapsedTime(&ms, start, stop);
+  float avg_us = ms / iters * 1000.f;
+  double flops = 6.0 * M * proj_size;
+  double gflops = flops / (ms / iters * 1e-3) / 1e9;
+  double bytes = (double)M * proj_size * 6;
+  double gbps = bytes / (ms / iters * 1e-3) / 1e9;
+  printf("  SiluGLU(M=%d, proj=%d): %.1f us, %.1f GFLOPS, %.1f GB/s\n", M,
+         proj_size, avg_us, gflops, gbps);
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
+  cudaFree(d_in);
+  cudaFree(d_out);
+  cudaStreamDestroy(stream);
+}
