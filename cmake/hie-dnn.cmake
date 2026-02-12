@@ -9,9 +9,17 @@ set(HIEDNN_USE_BF16
 set(HIEDNN_USE_CUDA
     ${ENABLE_CUDA}
     CACHE BOOL "HIE-DNN enables CUDA")
+# HIE-DNN uses its own gencode generation (CudaSetArch.cmake), so we pass
+# raw architecture numbers without CMake's -real/-virtual suffixes.
+set(_HIEDNN_ARCHS "")
+foreach(_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
+  string(REGEX REPLACE "-(real|virtual)$" "" _arch_clean "${_arch}")
+  list(APPEND _HIEDNN_ARCHS "${_arch_clean}")
+endforeach()
+list(REMOVE_DUPLICATES _HIEDNN_ARCHS)
 set(HIEDNN_CUDA_DEVICE_ARCH
-    ${CMAKE_CUDA_ARCHITECTURES}
-    CACHE STRING "HIE-DNN CUDA archs")
+    ${_HIEDNN_ARCHS}
+    CACHE STRING "HIE-DNN CUDA archs" FORCE)
 set(HIEDNN_UTEST
     OFF
     CACHE BOOL "HIE-DNN enables unit tests")

@@ -15,6 +15,34 @@ set(CMAKE_CUDA_ARCHITECTURES
     "80;86"
     CACHE STRING "CUDA SM")
 
+# Ensure forward-compatible PTX for newer GPUs (e.g., Blackwell SM100).
+# Architecture-specific variants like "90a" contain instructions (wgmma, etc.)
+# that fail when JIT-compiled for unsupported architectures. The CUDA runtime
+# always picks the highest matching PTX, so we must NOT embed compute_90a PTX.
+# Strategy: mark all archs as "-real" (SASS only), then add PTX only for the
+# lowest non-arch-specific CC.
+# We store the result in a separate variable to avoid polluting the cache.
+set(_ALLSPARK_CUDA_ARCHS_ORIG "${CMAKE_CUDA_ARCHITECTURES}")
+set(_ALLSPARK_CUDA_ARCHS "")
+set(_ALLSPARK_LOWEST_CC "")
+foreach(_arch IN LISTS _ALLSPARK_CUDA_ARCHS_ORIG)
+  # Strip any existing suffixes first to avoid double-appending
+  string(REGEX REPLACE "-(real|virtual)$" "" _arch_clean "${_arch}")
+  list(APPEND _ALLSPARK_CUDA_ARCHS "${_arch_clean}-real")
+  # Track the lowest non-arch-specific CC for PTX generation
+  string(REGEX MATCH "^([0-9]+)" _cc_base "${_arch_clean}")
+  if(_cc_base AND ("${_ALLSPARK_LOWEST_CC}" STREQUAL "" OR _cc_base LESS _ALLSPARK_LOWEST_CC))
+    set(_ALLSPARK_LOWEST_CC "${_cc_base}")
+  endif()
+endforeach()
+list(REMOVE_DUPLICATES _ALLSPARK_CUDA_ARCHS)
+# Add PTX for the lowest CC for forward compatibility
+if(_ALLSPARK_LOWEST_CC)
+  list(APPEND _ALLSPARK_CUDA_ARCHS "${_ALLSPARK_LOWEST_CC}-virtual")
+endif()
+set(CMAKE_CUDA_ARCHITECTURES "${_ALLSPARK_CUDA_ARCHS}")
+message(STATUS "CUDA architectures (with forward-compat PTX): ${CMAKE_CUDA_ARCHITECTURES}")
+
 set(CUDA_VERSION
     "11.4"
     CACHE STRING "CUDA VERSION")

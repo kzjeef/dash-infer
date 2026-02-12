@@ -2,9 +2,17 @@ message("========== flash-attention ==========")
 set(FLASHATTN_CUDA_VERSION
     ${CUDA_VERSION}
     CACHE STRING "flash-attn cuda version")
+# Flash-attention uses its own gencode generation, so we pass raw architecture
+# numbers without CMake's -real/-virtual suffixes.
+set(_FA_ARCHS "")
+foreach(_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
+  string(REGEX REPLACE "-(real|virtual)$" "" _arch_clean "${_arch}")
+  list(APPEND _FA_ARCHS "${_arch_clean}")
+endforeach()
+list(REMOVE_DUPLICATES _FA_ARCHS)
 set(FLASHATTN_GPU_ARCHS
-    ${CMAKE_CUDA_ARCHITECTURES}
-    CACHE STRING "flash-attn gpu archs")
+    ${_FA_ARCHS}
+    CACHE STRING "flash-attn gpu archs" FORCE)
 list(REMOVE_ITEM FLASHATTN_GPU_ARCHS "70")
 list(REMOVE_ITEM FLASHATTN_GPU_ARCHS "75")
 message(STATUS "CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
