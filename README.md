@@ -56,7 +56,7 @@ DashInfer is a highly optimized LLM inference engine with the following core fea
 # Supported Hardware and Data Types
 
 ## Hardware
-- **CUDA GPUs**: Support CUDA Version from 11.4 - 12.4, and supports various CUDA compute architectures like SM70 - SM90a (T4, 3090, 4090, V100, A100, A10, L20, H20, H100)
+- **CUDA GPUs**: Support CUDA Version from 11.4 - 12.9, and supports various CUDA compute architectures like SM70 - SM90a (T4, 3090, 4090, V100, A100, A10, L20, H20, H100). SM100 (B200) is experimental.
 - **x86 CPUs**: Hardware support for AVX2 instruction set is required. For Intel's 5th generation Xeon processors (Emerald Rapids), 4th generation Xeon processors (Sapphire Rapids), corresponding to Aliyun's 8th generation ECS instances (e.g., g8i), AMX instructions are used to accelerate caculation.
 - **ARMv9 CPU**: Hardware support for SVE instruction set is required. DashInfer supports ARMv9 architecture processors such as Yitian710, corresponding to Aliyun's 8th generation ECS instances (e.g. g8y), and adopts SVE instruction to accelerate caculation.
 
