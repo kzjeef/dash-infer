@@ -623,13 +623,17 @@ class DeepSeek_v3(Model):
         for key, torch_name in weight_name_map.items():
             if isinstance(torch_name, list):
                 if "experts" in key:
-                    tensor = (torch.stack(
-                        [torch.permute(torch_weight[name], (1, 0)).contiguous()
-                         for name in torch_name]).cpu())
-                    # Evict individual expert weights from lazy cache
-                    if _evict:
-                        for name in torch_name:
+                    expert_tensors = []
+                    for name in torch_name:
+                        expert_tensors.append(
+                            torch.permute(torch_weight[name], (1, 0)).contiguous())
+                        # Eagerly free merged expert weight to reduce peak memory
+                        if name in torch_weight and not _evict:
+                            del torch_weight[name]
+                        elif _evict:
                             _evict(name)
+                    tensor = torch.stack(expert_tensors).cpu()
+                    del expert_tensors
                 else:
                     tensor = (torch.concat(
                         [torch_weight[name] for name in torch_name]).cpu())

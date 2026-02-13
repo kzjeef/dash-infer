@@ -62,7 +62,6 @@ print("This may take several minutes for 671B model...", flush=True)
  .read_model_config()
 )
 # Enable Expert Parallelism: distribute 256 experts across 8 GPUs
-# (32 experts per GPU instead of replicating all 256)
 model_loader.as_model_config['use_ep'] = True
 print(f"EP mode enabled: 256 experts / 8 GPUs = 32 per GPU", flush=True)
 
