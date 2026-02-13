@@ -1,5 +1,5 @@
 '''
- Copyright (c) Alibaba, Inc. and its affiliates.
+ Copyright contributors to the DashInfer Project
  @file    deepseek_v3.py
 '''
 from .model_base import *
@@ -34,14 +34,15 @@ class DeepSeek_v3(Model):
         """Merge gate_proj and up_proj into gate_up_proj for dense FFN,
         routed experts, and shared experts."""
         new_model = {}
-        for key, val in torch_model.items():
-            if key.find("gate_proj.weight") != -1:
-                up_proj_key = key.replace("gate_proj", "up_proj")
-                if up_proj_key in torch_model:
-                    up_proj_val = torch_model[up_proj_key]
-                    new_key = key.replace("gate_proj", "gate_up_proj")
-                    tensor = torch.concat([val, up_proj_val]).cpu()
-                    new_model[new_key] = tensor
+        gate_keys = [k for k in torch_model.keys()
+                     if "gate_proj.weight" in k]
+        for key in gate_keys:
+            up_proj_key = key.replace("gate_proj", "up_proj")
+            if up_proj_key in torch_model:
+                new_key = key.replace("gate_proj", "gate_up_proj")
+                tensor = torch.concat([torch_model[key],
+                                       torch_model[up_proj_key]]).cpu()
+                new_model[new_key] = tensor
         torch_model.update(new_model)
 
     def _build_graph(self, torch_cfg, derive_type):

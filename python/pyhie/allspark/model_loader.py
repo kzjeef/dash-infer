@@ -10,6 +10,8 @@ import torch
 import torch.cuda
 import enum
 
+import json
+from pathlib import Path
 from safetensors.torch import safe_open
 from typing import Any, Dict, Generator, List, Tuple
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM, GenerationConfig
@@ -129,6 +131,141 @@ def get_state_dict(
     if use_safetensors:
         return _load_safetensors_weights(hf_weights_files)
     return _load_pt_weights(hf_weights_files)
+
+
+class LazyFP8StateDict(dict):
+    """A lazy state dict that loads and dequantizes FP8 weights on-demand.
+
+    Instead of loading all weights into memory at once (which requires ~1.3TB
+    for a 671B FP8 model), this dict loads individual tensors from safetensors
+    files only when accessed. FP8 block-wise weights are dequantized to the
+    target dtype on the fly.
+
+    Peak memory: ~1 weight tensor (~400MB for large expert weights) instead of
+    the full model.
+    """
+
+    def __init__(self, model_path, target_dtype=torch.bfloat16,
+                 fp8_block_size=(128, 128)):
+        super().__init__()
+        self._model_path = Path(model_path)
+        self._target_dtype = target_dtype
+        self._block_size = fp8_block_size
+        self._fp8_types = set()
+        if hasattr(torch, 'float8_e4m3fn'):
+            self._fp8_types.add(torch.float8_e4m3fn)
+        if hasattr(torch, 'float8_e5m2'):
+            self._fp8_types.add(torch.float8_e5m2)
+
+        # Build key -> shard file mapping from index
+        self._key_to_file = {}
+        self._all_keys = set()
+        index_file = self._model_path / 'model.safetensors.index.json'
+        if index_file.exists():
+            with open(index_file) as f:
+                index = json.load(f)
+            for key, shard in index['weight_map'].items():
+                self._key_to_file[key] = str(self._model_path / shard)
+                self._all_keys.add(key)
+        else:
+            # Single safetensors file
+            for sf in sorted(self._model_path.glob('*.safetensors')):
+                with safe_open(str(sf), framework='pt') as f:
+                    for key in f.keys():
+                        self._key_to_file[key] = str(sf)
+                        self._all_keys.add(key)
+
+        # Cache for freed tensors (set to Tensor(0) after serialization)
+        self._freed = set()
+        # Cache: keep loaded tensors until explicitly freed
+        self._cache = {}
+
+    def _dequant_fp8(self, weight, scale_inv):
+        """Dequantize FP8 block-wise weight using scale_inv."""
+        w = weight.to(self._target_dtype)
+        if scale_inv.dim() == 2 and w.dim() == 2:
+            M, N = w.shape
+            bm, bn = self._block_size
+            s = scale_inv.to(self._target_dtype)
+            s_exp = s.repeat_interleave(bm, dim=0).repeat_interleave(bn, dim=1)
+            w = w * s_exp[:M, :N]
+        else:
+            w = w * scale_inv.to(self._target_dtype)
+        return w
+
+    def _load_tensor(self, key):
+        """Load a single tensor, dequantizing FP8 if needed."""
+        if key in self._cache:
+            return self._cache[key]
+        if key in self._freed:
+            return torch.Tensor(0)
+        if key not in self._key_to_file:
+            raise KeyError(key)
+
+        shard_file = self._key_to_file[key]
+        with safe_open(shard_file, framework='pt') as f:
+            tensor = f.get_tensor(key)
+
+        # Check if this is an FP8 weight with a scale
+        scale_key = key + '_scale_inv' if not key.endswith('_scale_inv') else None
+        if scale_key and scale_key in self._all_keys and tensor.dtype in self._fp8_types:
+            with safe_open(self._key_to_file[scale_key], framework='pt') as f:
+                scale = f.get_tensor(scale_key)
+            tensor = self._dequant_fp8(tensor, scale)
+        elif key.endswith('.weight_scale_inv'):
+            # Scale tensor - skip (consumed during weight dequant)
+            return tensor
+        elif tensor.dtype in self._fp8_types:
+            # FP8 without scale - just upcast
+            tensor = tensor.to(self._target_dtype)
+        elif tensor.dtype in (torch.float32, torch.float16, torch.bfloat16):
+            if tensor.dtype != self._target_dtype:
+                tensor = tensor.to(self._target_dtype)
+
+        self._cache[key] = tensor
+        return tensor
+
+    def __getitem__(self, key):
+        if key in self._freed:
+            return torch.Tensor(0)
+        return self._load_tensor(key)
+
+    def __setitem__(self, key, value):
+        # When _trans_weight sets tensor to Tensor(0), mark as freed
+        if isinstance(value, torch.Tensor) and value.numel() == 0:
+            self._freed.add(key)
+            self._cache.pop(key, None)
+        else:
+            self._cache[key] = value
+
+    def _visible_keys(self):
+        """Keys excluding internal scale_inv entries (consumed during dequant)."""
+        base = (self._all_keys | set(self._cache.keys()))
+        return {k for k in base if not k.endswith('.weight_scale_inv')}
+
+    def __contains__(self, key):
+        return key in self._all_keys or key in self._cache
+
+    def __iter__(self):
+        return iter(self._visible_keys())
+
+    def keys(self):
+        return self._visible_keys()
+
+    def items(self):
+        for k in self.keys():
+            yield k, self[k]
+
+    def get(self, key, default=None):
+        if key in self:
+            return self[key]
+        return default
+
+    def update(self, other):
+        if isinstance(other, dict):
+            for k, v in other.items():
+                self._cache[k] = v
+                self._all_keys.add(k)
 
 
 class LLM:
@@ -442,58 +579,46 @@ class HuggingFaceModel(LLM):
             self.torch_model_state_dict = self.torch_model.state_dict()
             self.torch_model = None
         else:
-            # some interal models change the method to save weight of models, we direct load the weight
+            # Direct load: load weights from safetensors without HuggingFace model init
             try:
-                self.torch_model_state_dict = get_state_dict(self.hf_model_path, fall_back_to_pt=False,
-                                                             load_format="auto")
                 dtype_dict = {'float32': torch.float32, 'float16': torch.float16, 'bfloat16': torch.bfloat16}
-                fp8_types = set()
-                if hasattr(torch, 'float8_e4m3fn'):
-                    fp8_types.add(torch.float8_e4m3fn)
-                if hasattr(torch, 'float8_e5m2'):
-                    fp8_types.add(torch.float8_e5m2)
-                if self.data_type in dtype_dict.keys():
-                    convert_dtype = dtype_dict[self.data_type]
-                    # Dequantize FP8 block-wise weights using weight_scale_inv
-                    # Infer block size from the quantization config or weight shapes
-                    hf_quant_cfg = getattr(self.hf_model_config, 'quantization_config', None)
-                    if hf_quant_cfg and hasattr(hf_quant_cfg, 'get'):
-                        fp8_block_size = hf_quant_cfg.get('weight_block_size', [128, 128])
-                    elif hf_quant_cfg and hasattr(hf_quant_cfg, 'weight_block_size'):
-                        fp8_block_size = hf_quant_cfg.weight_block_size
-                    else:
-                        fp8_block_size = [128, 128]
-                    scale_inv_keys = [k for k in self.torch_model_state_dict
-                                      if k.endswith('.weight_scale_inv')]
-                    for scale_key in scale_inv_keys:
-                        weight_key = scale_key.replace('.weight_scale_inv', '.weight')
-                        if weight_key in self.torch_model_state_dict:
-                            w = self.torch_model_state_dict[weight_key]
-                            s = self.torch_model_state_dict[scale_key]
-                            if w.dtype in fp8_types:
-                                w_bf16 = w.to(convert_dtype)
-                                if s.dim() == 2 and w_bf16.dim() == 2:
-                                    M, N = w_bf16.shape
-                                    block_m, block_n = fp8_block_size
-                                    # Expand scale using fixed block size, trim for edge blocks
-                                    s_conv = s.to(convert_dtype)
-                                    s_expanded = s_conv.repeat_interleave(
-                                        block_m, dim=0).repeat_interleave(block_n, dim=1)
-                                    s_expanded = s_expanded[:M, :N]
-                                    w_bf16 = w_bf16 * s_expanded
-                                else:
-                                    w_bf16 = w_bf16 * s.to(convert_dtype)
-                                self.torch_model_state_dict[weight_key] = w_bf16
-                        # Remove the scale_inv entry (not needed by allspark)
-                        del self.torch_model_state_dict[scale_key]
-                    # Convert remaining float types
-                    for k, v in self.torch_model_state_dict.items():
-                        if v.dtype in (set(dtype_dict.values()) | fp8_types) and v.dtype != convert_dtype:
-                            self.torch_model_state_dict[k] = v.to(convert_dtype)
+                if self.data_type not in dtype_dict:
+                    raise ValueError(f"unsupported data type: {self.data_type}")
+                convert_dtype = dtype_dict[self.data_type]
+
+                # Detect FP8 weights by checking for weight_scale_inv in index
+                has_fp8 = False
+                index_file = os.path.join(self.hf_model_path, 'model.safetensors.index.json')
+                if os.path.exists(index_file):
+                    with open(index_file) as f:
+                        idx = json.load(f)
+                    has_fp8 = any(k.endswith('.weight_scale_inv')
+                                 for k in idx.get('weight_map', {}))
+
+                if has_fp8:
+                    # Use lazy loading for FP8 models to avoid OOM on large models.
+                    # Each weight is loaded and dequantized on-demand, keeping peak
+                    # memory at ~1 tensor instead of the full model.
+                    fp8_block_size = [128, 128]
+                    hf_quant_cfg = None
+                    cfg_file = os.path.join(self.hf_model_path, 'config.json')
+                    if os.path.exists(cfg_file):
+                        with open(cfg_file) as f:
+                            cfg = json.load(f)
+                        qc = cfg.get('quantization_config', {})
+                        fp8_block_size = qc.get('weight_block_size', [128, 128])
+                    print(f"Using lazy FP8 loading (block_size={fp8_block_size})")
+                    self.torch_model_state_dict = LazyFP8StateDict(
+                        self.hf_model_path, target_dtype=convert_dtype,
+                        fp8_block_size=tuple(fp8_block_size))
                 else:
-                    self.torch_model_state_dict = None
-                    raise ValueError("unsupported data type: {}".format(
-                        self.data_type))
+                    # Non-FP8: load all weights eagerly (original path)
+                    self.torch_model_state_dict = get_state_dict(
+                        self.hf_model_path, fall_back_to_pt=False,
+                        load_format="auto")
+                    for k, v in list(self.torch_model_state_dict.items()):
+                        if v.dtype != convert_dtype and v.is_floating_point():
+                            self.torch_model_state_dict[k] = v.to(convert_dtype)
             except Exception as e:
                 print(f"exception when load model: {self.hf_model_path} , exception: {e}")
                 raise ModelSerializerException("error load from ", 1, self)
@@ -515,7 +640,6 @@ class HuggingFaceModel(LLM):
             print('''[Warning]Model loader: failed to get model vocab, JSON Mode disabled''')
             return self
         # try to get tokenizer type from 'tokenizer.json', if fail, use default type
-        import json
         tokenizer_file = os.path.join(self.hf_model_path, 'tokenizer.json')
         self.vocab_type = VocabType.VOCAB_TYPE_BPE
         try:

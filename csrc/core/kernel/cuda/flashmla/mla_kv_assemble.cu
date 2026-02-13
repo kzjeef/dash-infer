@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright contributors to the DashInfer Project
  * @file    mla_kv_assemble.cu
  *
  * CUDA kernels for MLA K/V assembly during prefill.

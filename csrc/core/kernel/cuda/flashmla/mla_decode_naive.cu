@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright contributors to the DashInfer Project
  * @file    mla_decode_naive.cu
  *
  * Naive MLA decode attention kernel using the "absorbed" attention approach.
