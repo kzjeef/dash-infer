@@ -447,16 +447,54 @@ class HuggingFaceModel(LLM):
                 self.torch_model_state_dict = get_state_dict(self.hf_model_path, fall_back_to_pt=False,
                                                              load_format="auto")
                 dtype_dict = {'float32': torch.float32, 'float16': torch.float16, 'bfloat16': torch.bfloat16}
+                fp8_types = set()
+                if hasattr(torch, 'float8_e4m3fn'):
+                    fp8_types.add(torch.float8_e4m3fn)
+                if hasattr(torch, 'float8_e5m2'):
+                    fp8_types.add(torch.float8_e5m2)
                 if self.data_type in dtype_dict.keys():
                     convert_dtype = dtype_dict[self.data_type]
+                    # Dequantize FP8 block-wise weights using weight_scale_inv
+                    # Infer block size from the quantization config or weight shapes
+                    hf_quant_cfg = getattr(self.hf_model_config, 'quantization_config', None)
+                    if hf_quant_cfg and hasattr(hf_quant_cfg, 'get'):
+                        fp8_block_size = hf_quant_cfg.get('weight_block_size', [128, 128])
+                    elif hf_quant_cfg and hasattr(hf_quant_cfg, 'weight_block_size'):
+                        fp8_block_size = hf_quant_cfg.weight_block_size
+                    else:
+                        fp8_block_size = [128, 128]
+                    scale_inv_keys = [k for k in self.torch_model_state_dict
+                                      if k.endswith('.weight_scale_inv')]
+                    for scale_key in scale_inv_keys:
+                        weight_key = scale_key.replace('.weight_scale_inv', '.weight')
+                        if weight_key in self.torch_model_state_dict:
+                            w = self.torch_model_state_dict[weight_key]
+                            s = self.torch_model_state_dict[scale_key]
+                            if w.dtype in fp8_types:
+                                w_bf16 = w.to(convert_dtype)
+                                if s.dim() == 2 and w_bf16.dim() == 2:
+                                    M, N = w_bf16.shape
+                                    block_m, block_n = fp8_block_size
+                                    # Expand scale using fixed block size, trim for edge blocks
+                                    s_conv = s.to(convert_dtype)
+                                    s_expanded = s_conv.repeat_interleave(
+                                        block_m, dim=0).repeat_interleave(block_n, dim=1)
+                                    s_expanded = s_expanded[:M, :N]
+                                    w_bf16 = w_bf16 * s_expanded
+                                else:
+                                    w_bf16 = w_bf16 * s.to(convert_dtype)
+                                self.torch_model_state_dict[weight_key] = w_bf16
+                        # Remove the scale_inv entry (not needed by allspark)
+                        del self.torch_model_state_dict[scale_key]
+                    # Convert remaining float types
                     for k, v in self.torch_model_state_dict.items():
-                        if v.dtype in dtype_dict.values():
+                        if v.dtype in (set(dtype_dict.values()) | fp8_types) and v.dtype != convert_dtype:
                             self.torch_model_state_dict[k] = v.to(convert_dtype)
                 else:
                     self.torch_model_state_dict = None
                     raise ValueError("unsupported data type: {}".format(
                         self.data_type))
-            except:
+            except Exception as e:
                 print(f"exception when load model: {self.hf_model_path} , exception: {e}")
                 raise ModelSerializerException("error load from ", 1, self)
 

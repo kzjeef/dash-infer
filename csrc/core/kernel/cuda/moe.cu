@@ -498,5 +498,159 @@ void FilteringExperts(int* topk_indice, const int* topk_indice_in,
       N, topk_indice, topk_indice_in, total_token, num_expert, top_k, ep_num,
       ep_group);
 }
+// ---------------------------------------------------------------------------
+// DeepSeek V3 Grouped Expert Routing
+// ---------------------------------------------------------------------------
+//
+// DeepSeek V3 uses a two-level routing strategy:
+//   1. Sigmoid scoring (not softmax)
+//   2. Group-level top-k (select top_k_group groups from num_group groups)
+//   3. Within-group top-k (select experts within selected groups)
+//   4. Score normalization + routed_scaling_factor
+
+__global__ void grouped_topk_kernel(const float* gate_input,
+                                     float* expert_score, int* expert_index,
+                                     int total_token, int num_expert,
+                                     int num_group, int top_k_group, int top_k,
+                                     float routed_scaling_factor) {
+  int token_idx = blockIdx.x;
+  if (token_idx >= total_token) return;
+
+  const float* logits = gate_input + token_idx * num_expert;
+  float* out_score = expert_score + token_idx * top_k;
+  int* out_index = expert_index + token_idx * top_k;
+
+  int experts_per_group = num_expert / num_group;
+
+  // Step 1: Compute sigmoid scores for all experts
+  // Use shared memory for scores
+  extern __shared__ float shared[];
+  float* sigmoid_scores = shared;                   // [num_expert]
+  float* group_scores = shared + num_expert;         // [num_group]
+  int* group_indices = (int*)(group_scores + num_group);  // [num_group]
+
+  // Each thread handles multiple experts
+  for (int e = threadIdx.x; e < num_expert; e += blockDim.x) {
+    sigmoid_scores[e] = 1.0f / (1.0f + expf(-logits[e]));
+  }
+  __syncthreads();
+
+  // Step 2: Compute group-level scores (sum of sigmoid within each group)
+  if (threadIdx.x < num_group) {
+    int g = threadIdx.x;
+    float sum = 0.0f;
+    for (int j = 0; j < experts_per_group; ++j) {
+      sum += sigmoid_scores[g * experts_per_group + j];
+    }
+    group_scores[g] = sum;
+    group_indices[g] = g;
+  }
+  __syncthreads();
+
+  // Step 3: Thread 0 selects top_k_group groups (simple insertion sort)
+  if (threadIdx.x == 0) {
+    // Selection sort for top_k_group from num_group
+    for (int i = 0; i < top_k_group; ++i) {
+      int best = i;
+      for (int j = i + 1; j < num_group; ++j) {
+        if (group_scores[j] > group_scores[best]) {
+          best = j;
+        }
+      }
+      if (best != i) {
+        // Swap scores
+        float tmp_s = group_scores[i];
+        group_scores[i] = group_scores[best];
+        group_scores[best] = tmp_s;
+        // Swap indices
+        int tmp_i = group_indices[i];
+        group_indices[i] = group_indices[best];
+        group_indices[best] = tmp_i;
+      }
+    }
+  }
+  __syncthreads();
+
+  // Step 4: Within each selected group, find top experts
+  // We need to select top_k experts total from top_k_group groups
+  // Simple approach: select top_k_per_group = top_k / top_k_group per group
+  int top_k_per_group = top_k / top_k_group;
+
+  // Thread 0 does the final selection
+  if (threadIdx.x == 0) {
+    int out_idx = 0;
+
+    for (int gi = 0; gi < top_k_group && out_idx < top_k; ++gi) {
+      int g = group_indices[gi];
+      int base = g * experts_per_group;
+
+      // Find top_k_per_group experts in this group
+      // Use simple selection for small top_k_per_group (typically 2)
+      for (int ki = 0; ki < top_k_per_group && out_idx < top_k; ++ki) {
+        float best_score = -1.0f;
+        int best_expert = -1;
+        for (int j = 0; j < experts_per_group; ++j) {
+          int expert_id = base + j;
+          float score = sigmoid_scores[expert_id];
+
+          // Check if this expert was already selected
+          bool already_selected = false;
+          for (int prev = 0; prev < out_idx; ++prev) {
+            if (out_index[prev] == expert_id) {
+              already_selected = true;
+              break;
+            }
+          }
+          if (!already_selected && score > best_score) {
+            best_score = score;
+            best_expert = expert_id;
+          }
+        }
+
+        if (best_expert >= 0) {
+          out_index[out_idx] = best_expert;
+          out_score[out_idx] = best_score;
+          out_idx++;
+        }
+      }
+    }
+
+    // Step 5: Normalize scores and apply scaling factor
+    float score_sum = 0.0f;
+    for (int i = 0; i < out_idx; ++i) {
+      score_sum += out_score[i];
+    }
+    if (score_sum > 0.0f) {
+      for (int i = 0; i < out_idx; ++i) {
+        out_score[i] = (out_score[i] / score_sum) * routed_scaling_factor;
+      }
+    }
+
+    // Fill remaining slots if any
+    for (int i = out_idx; i < top_k; ++i) {
+      out_index[i] = 0;
+      out_score[i] = 0.0f;
+    }
+  }
+}
+
+void GroupedTopKKernelLauncher(const float* gate_input, float* expert_score,
+                               int* expert_index, int total_token,
+                               int num_expert, int num_group, int top_k_group,
+                               int top_k, float routed_scaling_factor,
+                               cudaStream_t stream) {
+  // Shared memory: sigmoid_scores[num_expert] + group_scores[num_group] +
+  //                group_indices[num_group]
+  int shared_size = num_expert * sizeof(float) + num_group * sizeof(float) +
+                    num_group * sizeof(int);
+
+  // Use enough threads to cover all experts for parallel sigmoid
+  int threads = min(num_expert, 256);
+
+  grouped_topk_kernel<<<total_token, threads, shared_size, stream>>>(
+      gate_input, expert_score, expert_index, total_token, num_expert,
+      num_group, top_k_group, top_k, routed_scaling_factor);
+}
+
 }  // namespace cuda
 }  // namespace allspark

@@ -150,6 +150,57 @@ class Qwen2MoeConfigAdapter(ModelConfigAdapter):
         return self.model_dtype
 
 
+class DeepSeekV3ConfigAdapter(ModelConfigAdapter):
+    def __init__(self, hf_model_config):
+        self.model_config = hf_model_config.__dict__
+        self.model_config["model_type"] = "DeepSeek_v3"
+
+        self.model_config["rotary_emb_base"] = getattr(
+            hf_model_config, 'rope_theta', 10000)
+
+        hidden_size_per_head = int(
+            hf_model_config.hidden_size / hf_model_config.num_attention_heads
+        )
+        self.model_config["size_per_head"] = hidden_size_per_head
+
+        # MLA-specific config
+        self.model_config["kv_lora_rank"] = getattr(
+            hf_model_config, 'kv_lora_rank', 512)
+        self.model_config["q_lora_rank"] = getattr(
+            hf_model_config, 'q_lora_rank', 1536)
+        self.model_config["qk_nope_head_dim"] = getattr(
+            hf_model_config, 'qk_nope_head_dim', 128)
+        self.model_config["qk_rope_head_dim"] = getattr(
+            hf_model_config, 'qk_rope_head_dim', 64)
+        self.model_config["v_head_dim"] = getattr(
+            hf_model_config, 'v_head_dim', 128)
+
+        # MOE config
+        self.model_config["n_routed_experts"] = getattr(
+            hf_model_config, 'n_routed_experts', 256)
+        self.model_config["num_experts_per_tok"] = getattr(
+            hf_model_config, 'num_experts_per_tok', 8)
+        self.model_config["first_k_dense_replace"] = getattr(
+            hf_model_config, 'first_k_dense_replace', 3)
+        self.model_config["moe_intermediate_size"] = getattr(
+            hf_model_config, 'moe_intermediate_size', 2048)
+        self.model_config["routed_scaling_factor"] = getattr(
+            hf_model_config, 'routed_scaling_factor', 2.5)
+
+        self.model_dtype = torch_dtype_to_as_dtype(hf_model_config.torch_dtype)
+        if self.model_dtype is None:
+            print(
+                "config.json not setup data type correctly, use bfloat16 as model data type"
+            )
+            self.model_dtype = "bfloat16"
+
+        print("model config:")
+        print(self.model_config)
+
+    def get_model_data_type(self):
+        return self.model_dtype
+
+
 class LlamaConfigAdapter(ModelConfigAdapter):
     def __init__(self, hf_model_config: LlamaConfig):
         self.model_config = hf_model_config.__dict__
@@ -222,6 +273,8 @@ class ModelAdapterFactory:
             "Qwen2MoeConfig": Qwen2MoeConfigAdapter,
             "Qwen2VLForConditionalGeneration": QWen2ConfigAdapter,
             "LlamaConfig": LlamaConfigAdapter,
+            "DeepseekV2Config": DeepSeekV3ConfigAdapter,
+            "DeepseekV3Config": DeepSeekV3ConfigAdapter,
             "ChatGLMConfig": ChatGLMConfigAdapter,
         }
         class_name = model_config_instance.__class__.__name__

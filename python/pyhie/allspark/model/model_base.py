@@ -179,6 +179,30 @@ class MultiQueryAttention(Operator):
         self.op.outputs.append(make_tensor(op_name + ".out"))
 
 
+class MLAAttention(Operator):
+    """Multi-head Latent Attention for DeepSeek V2/V3.
+
+    When q_lora_rank > 0 (V3): Q compression chain
+      weights: [q_a_proj, q_a_norm, q_b_proj, kv_a_proj, kv_a_norm, kv_b_proj]
+    When q_lora_rank == 0 (V2): direct Q projection
+      weights: [q_proj, kv_a_proj, kv_a_norm, kv_b_proj]
+    """
+
+    def __init__(self, op_name, inputs, op_attr={}):
+        super().__init__("MLAAttention", op_name, inputs, op_attr)
+        q_lora_rank = op_attr.get("q_lora_rank", 0)
+        if q_lora_rank > 0:
+            self.op.weights.append(make_tensor(op_name + ".q_a_proj.weight"))
+            self.op.weights.append(make_tensor(op_name + ".q_a_norm.gamma"))
+            self.op.weights.append(make_tensor(op_name + ".q_b_proj.weight"))
+        else:
+            self.op.weights.append(make_tensor(op_name + ".q_proj.weight"))
+        self.op.weights.append(make_tensor(op_name + ".kv_a_proj.weight"))
+        self.op.weights.append(make_tensor(op_name + ".kv_a_norm.gamma"))
+        self.op.weights.append(make_tensor(op_name + ".kv_b_proj.weight"))
+        self.op.outputs.append(make_tensor(op_name + ".out"))
+
+
 class EncdecAttention(Operator):
 
     def __init__(self, op_name, inputs, op_attr={}):

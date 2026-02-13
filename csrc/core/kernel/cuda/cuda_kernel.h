@@ -440,5 +440,67 @@ void GetExpertByIndice(int* expert_indices, const int* in_expert_indices,
 void FilteringExperts(int* topk_indice, const int* topk_indice_in,
                       int total_token, int num_expert, int top_k, int ep_num,
                       int* ep_group, cudaStream_t stream);
+
+/// DeepSeek V3 grouped expert routing with sigmoid scoring.
+///
+/// Performs two-level top-k selection:
+///   1. Compute sigmoid affinity scores (instead of softmax)
+///   2. Sum scores within each group to get group-level scores
+///   3. Select top_k_group groups
+///   4. Within each selected group, select top_k_per_group experts
+///   5. Normalize expert scores and apply routed_scaling_factor
+///
+/// @param gate_input    [total_token, num_expert] float gate logits (input)
+/// @param expert_score  [total_token, top_k] float final expert scores (output)
+/// @param expert_index  [total_token, top_k] int selected expert indices (output)
+/// @param total_token   number of tokens in batch
+/// @param num_expert    total number of routed experts (e.g., 256)
+/// @param num_group     number of expert groups (e.g., 8)
+/// @param top_k_group   number of groups to select (e.g., 4)
+/// @param top_k         total experts to select per token (e.g., 8)
+/// @param routed_scaling_factor  scaling factor for expert scores (e.g., 2.5)
+/// MLA K/V assembly: assemble K and V from kv_full and k_rope for prefill attention.
+/// kv_full: [M, H * (d_nope + d_v)], k_rope: [M, d_rope] (broadcast to all heads)
+/// k_assembled: [M, H, d_nope + d_rope], v_assembled: [M, H, d_v]
+template <typename T>
+void MLAKVAssembleLauncher(T* k_assembled, T* v_assembled, const T* kv_full,
+                           const T* k_rope, int total_tokens, int num_heads,
+                           int d_nope, int d_rope, int d_v,
+                           int k_rope_stride, cudaStream_t stream);
+
+/// MLA strided K RoPE: apply RoPE to k_rope within kv_compressed in-place.
+/// kv_compressed: [M, kv_lora_rank + d_rope], k_rope at offset kv_lora_rank.
+template <typename T>
+void MLAStridedRoPEKLauncher(T* kv_compressed, const float* inv_freq,
+                             const int* step_list, int total_tokens,
+                             int d_rope, int kv_lora_rank,
+                             cudaStream_t stream);
+
+/// MLA copy compressed KV to non-contiguous span cache.
+/// span_ptrs: [num_spans] array of pointers to span data.
+template <typename T>
+void MLACopyToSpanCacheLauncher(T* const* span_ptrs, const T* kv_compressed,
+                                int total_tokens, int kv_dim, int span_len,
+                                int start_pos, cudaStream_t stream);
+
+/// MLA decoupled RoPE for Q: apply RoPE to last d_rope dims of each head
+/// q: [total_tokens, num_heads, d_nope + d_rope] (modified in-place)
+template <typename T>
+void MLARoPEQLauncher(T* q, const float* inv_freq, const int* step_list,
+                      const int* batch_token_offsets, int total_tokens,
+                      int num_heads, int d_nope, int d_rope, int seq_len,
+                      cudaStream_t stream);
+
+/// MLA decoupled RoPE for K_rope: apply RoPE to k_rope portion of kv_compressed
+/// k_rope: [total_tokens, d_rope] (modified in-place)
+template <typename T>
+void MLARoPEKLauncher(T* k_rope, const float* inv_freq, const int* step_list,
+                      int total_tokens, int d_rope, cudaStream_t stream);
+
+void GroupedTopKKernelLauncher(const float* gate_input, float* expert_score,
+                               int* expert_index, int total_token,
+                               int num_expert, int num_group, int top_k_group,
+                               int top_k, float routed_scaling_factor,
+                               cudaStream_t stream);
 }  // namespace cuda
 }  // namespace allspark

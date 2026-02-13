@@ -78,6 +78,14 @@ class MoeOp : public AsOperator {
   int ep_num_;
   bool use_ep_ = false;
   std::unique_ptr<AsTensor> ep_group_;
+
+  // Grouped routing (DeepSeek V3)
+  // routing_mode: 0 = softmax + topk (default, Qwen MOE)
+  //               1 = sigmoid + grouped topk (DeepSeek V3)
+  int routing_mode_ = 0;
+  int num_group_ = 8;           // number of expert groups
+  int top_k_group_ = 4;         // number of groups to select
+  float routed_scaling_factor_ = 1.0f;
 };
 
 }  // namespace allspark

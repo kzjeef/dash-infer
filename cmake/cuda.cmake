@@ -58,6 +58,18 @@ include(flash-attention)
 list(APPEND CUDA_3RD_PARTY_LIBS ${FLASHATTN_LIBRARY})
 endif()
 
+# flash-mla (requires CUDA 12.3+ and SM90+)
+# FlashMLA integration is prepared but disabled by default until the
+# FlashMLA library build is validated. The MLA operator compiles without it
+# and will use flash-attention for prefill. Enable with -DENABLE_FLASH_MLA=ON.
+option(ENABLE_FLASH_MLA "Build with FlashMLA decode kernel support" OFF)
+if(ENABLE_FLASH_MLA AND ${CUDA_VERSION} VERSION_GREATER_EQUAL "12.3")
+include(flashmla)
+if(FLASHMLA_ENABLED)
+  list(APPEND CUDA_3RD_PARTY_LIBS ${FLASHMLA_LIBRARY})
+endif()
+endif()
+
 if(ENABLE_NV_STATIC_LIB)
   message("Using static lib of CUDAToolkit")
   set(AS_CUDA_CUDART CUDA::cudart_static)

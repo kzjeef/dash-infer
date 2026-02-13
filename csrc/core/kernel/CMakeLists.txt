@@ -99,6 +99,7 @@ if (ENABLE_CUDA)
       cuda/cache_quant/*.cu
       cuda/cuda_fused_matmul/*.cu
       cuda/flashv2/*.cu
+      cuda/flashmla/*.cu
       cuda/gemm_lowp/*.cu
       cuda/gemm_lowp/*.cpp
       cuda/hie/*.cu
@@ -155,5 +156,8 @@ endif()
 if (ENABLE_CUDA)
   if(${CUDA_VERSION} VERSION_GREATER_EQUAL "11.8")
     add_dependencies(allspark_kernel project_flashattn)
+  endif()
+  if(ENABLE_FLASH_MLA AND FLASHMLA_ENABLED)
+    add_dependencies(allspark_kernel project_flashmla)
   endif()
 endif()
