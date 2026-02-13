@@ -193,46 +193,45 @@ class CMakeBuild(build_ext):
         else:
             libcxx_setting = "libstdc++"
 
-        conanfile = "conanfile"
-        openmpi_rebuild  = ""
-        if enable_multinuma == "ON":
-            conanfile += "_openmpi"
-            openmpi_rebuild = "-b openmpi -b bison"
+        # Conan 2.x: single conanfile.py with options
+        conan_profile = "conanprofile.x86_64"
+        conan_options = ""
         if is_arm:
-            conanfile += "_arm"
-        conanfile += ".txt"
+            conan_profile = "conanprofile_armclang.aarch64"
+            conan_options += " -o arm=True"
+        if enable_multinuma == "ON":
+            conan_options += " -o enable_multinuma=True"
 
-        conan_install_arm = Template(
-            "conan profile new dashinfer_compiler_profile --detect --force\n" +
-            "cp -f {{cwd_parent}}/conan/conanprofile_armclang.aarch64 ~/.conan/profiles/dashinfer_compiler_profile\n" +
-            "cp -r {{cwd_parent}}/conan/settings_arm.yml ~/.conan/settings.yml\n" +
-            "conan profile update settings.compiler.libcxx={{libcxx_setting}} dashinfer_compiler_profile\n" +
-            "conan install {{cwd_parent}}/conan/{{conanfile}} -pr dashinfer_compiler_profile -b missing {{openmpi_rebuild}} -b protobuf -b gtest -b glog"
-        ).render(libcxx_setting=libcxx_setting, cwd_parent=str(cwd.parent), conanfile=conanfile, openmpi_rebuild=openmpi_rebuild)
-
-        conan_install_other = Template(
-            "conan profile new dashinfer_compiler_profile --detect --force\n" +
-            "conan profile update settings.compiler.libcxx={{libcxx_setting}} dashinfer_compiler_profile\n" +
-            "conan install {{cwd_parent}}/conan/{{conanfile}} -pr dashinfer_compiler_profile -b missing {{openmpi_rebuild}} -b protobuf -b gtest -b glog"
-        ).render(libcxx_setting=libcxx_setting, cwd_parent=str(cwd.parent), conanfile=conanfile, openmpi_rebuild=openmpi_rebuild)
-
-        conan_install_cmd = conan_install_other
+        conan_install_cmd = Template(
+            "conan install {{cwd_parent}}/conan"
+            " -pr:h {{cwd_parent}}/conan/{{conan_profile}}"
+            " -s compiler.libcxx={{libcxx_setting}}"
+            " -of ."
+            " --build=missing"
+            " --build=protobuf"
+            " --build=gtest"
+            " --build=glog"
+            "{{conan_options}}"
+        ).render(
+            libcxx_setting=libcxx_setting,
+            cwd_parent=str(cwd.parent),
+            conan_profile=conan_profile,
+            conan_options=conan_options,
+        )
 
         export_path_cmd = ""
         if is_arm:
-            # need manual export on arm
             export_path_cmd = "export PATH=$PATH:" + str(
                 cwd.absolute()) + "/" + self.build_temp + "/bin"
-            conan_install_cmd = conan_install_arm
 
         # because it's require a conan virtual env, so we must write a shell to execute it.
         bash_template = Template(
             '#!/bin/bash -x\n' + 'gcc --version\n' + 'set -e\n'
             #+ '{{conan_install_cmd}}\n'  # uncomment this line if you want to clean rebuild.
             +
-            'if [ ! -f "activate.sh" ]; \nthen {{conan_install_cmd}};\n fi\n'  # conan install in here to make sure protoc and protobuf have same version.
-            + 'source ./activate.sh\n' + '{{export_path_cmd}}\n' +
-            'cmake --version\n' + 'cmake {{dir}} {{cmake_args}} \n' +
+            'if [ ! -f "conan_toolchain.cmake" ]; \nthen {{conan_install_cmd}};\n fi\n'  # conan install in here to make sure protoc and protobuf have same version.
+            + 'source ./conanbuild.sh\n' + '{{export_path_cmd}}\n' +
+            'cmake --version\n' + 'cmake {{dir}} -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake {{cmake_args}} \n' +
             'cmake --build . --target install -j16\n')
 
         with open('.python_build.sh', 'w') as f:

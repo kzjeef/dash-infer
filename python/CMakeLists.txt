@@ -31,8 +31,8 @@ target_include_directories(_allspark
 target_link_options(_allspark PRIVATE -Wl,--whole-archive $<TARGET_FILE:allspark_framework_static> -Wl,--no-whole-archive -rdynamic)
 target_link_libraries(_allspark PRIVATE
    allspark_framework_static
-   CONAN_PKG::protobuf
-   CONAN_PKG::zlib)
+   protobuf::libprotobuf
+   ZLIB::ZLIB)
 set_target_properties(_allspark PROPERTIES INSTALL_RPATH "$ORIGIN:$ORIGIN/${CMAKE_INSTALL_LIBDIR}")
 set_target_properties(_allspark PROPERTIES CXX_STANDARD 17)
 if(UNIX AND NOT APPLE)
@@ -56,7 +56,7 @@ if (ENABLE_MULTINUMA)
        -Wl,--whole-archive
        allspark_client
        -Wl,--no-whole-archive
-       CONAN_PKG::protobuf)
+       protobuf::libprotobuf)
     # target_link_libraries(_allspark_client PRIVATE allspark_client)
     set_target_properties(_allspark_client PROPERTIES INSTALL_RPATH "$ORIGIN:$ORIGIN/${CMAKE_INSTALL_LIBDIR}")
     set_target_properties(_allspark_client PROPERTIES CXX_STANDARD 17)

@@ -23,7 +23,7 @@ add_custom_target(protobuf_svc_target DEPENDS ${PROTO_SVC_SRCS} ${PROTO_SVC_HDRS
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--unresolved-symbols=ignore-in-shared-libs")
 add_executable(allspark_daemon ${PROTO_SVC_SRCS} ${PROTO_SVC_GRPC_SRC} allspark_service.cpp)
 # add_dependencies(allspark_daemon protobuf_svc_target)
-target_link_libraries(allspark_daemon allspark_framework CONAN_PKG::grpc CONAN_PKG::protobuf CONAN_PKG::glog)
+target_link_libraries(allspark_daemon allspark_framework gRPC::grpc++ protobuf::libprotobuf glog::glog)
 target_include_directories(
     allspark_daemon
   PUBLIC
@@ -35,7 +35,7 @@ target_include_directories(
 set_target_properties(allspark_daemon PROPERTIES INSTALL_RPATH "$ORIGIN:$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
 
 add_library(allspark_client STATIC ${PROTO_SVC_SRCS} ${PROTO_SVC_GRPC_SRC} allspark_client.cpp allspark_client_impl.cpp allspark_service_parallel.cpp)
-target_link_libraries(allspark_client allspark_framework CONAN_PKG::grpc CONAN_PKG::protobuf CONAN_PKG::glog ${THREAD_LIB})
+target_link_libraries(allspark_client allspark_framework gRPC::grpc++ protobuf::libprotobuf glog::glog ${THREAD_LIB})
 
 if (MEM_CHECK)
     target_link_options(allspark_client PUBLIC "-fsanitize=address")

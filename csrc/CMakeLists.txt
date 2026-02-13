@@ -57,9 +57,9 @@ if (ENABLE_CUDA)
 endif()
 
 if (ENABLE_MULTINUMA)
-    list(APPEND ALLSPARK_3RD_LIBS CONAN_PKG::openmpi)
+    list(APPEND ALLSPARK_3RD_LIBS MPI::MPI_CXX)
 endif()
-list(APPEND ALLSPARK_3RD_LIBS CONAN_PKG::zlib)
+list(APPEND ALLSPARK_3RD_LIBS ZLIB::ZLIB)
 
 list(APPEND ALLSPARK_3RD_LIBS ${CPP_IPC_LIBRARY})
 list(APPEND ALLSPARK_3RD_LIBS ${SMHASHER_LIBRARY})
@@ -135,9 +135,9 @@ target_link_libraries(allspark_objects
         git_version
         stdc++fs
         allspark_kernel
-        CONAN_PKG::glog
-        CONAN_PKG::protobuf
-        CONAN_PKG::zlib
+        glog::glog
+        protobuf::libprotobuf
+        ZLIB::ZLIB
         ${ALLSPARK_3RD_LIBS})
 if (ENABLE_SPAN_ATTENTION)
 target_compile_definitions(allspark_objects PRIVATE -DENABLE_SPAN_ATTENTION=1)

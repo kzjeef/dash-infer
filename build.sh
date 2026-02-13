@@ -58,38 +58,44 @@ fi
 if [ ! -d "./${build_folder}" ] || [ "$force_conan" != "OFF" ] ; then
     mkdir -p ${build_folder} && cd ${build_folder}
 
-    conan profile new dashinfer_compiler_profile --detect --force
-    conanfile=../conan/conanfile.txt
+    # Conan 2.x: select profile and options
+    conan_profile="../conan/conanprofile.x86_64"
+    conan_options=""
 
     if [ "${enable_multinuma}" == "ON" ]; then
-      conanfile=../conan/conanfile_openmpi.txt
+      conan_options="${conan_options} -o enable_multinuma=True"
     fi
 
     if [ "${with_platform,,}" == "armclang" ]; then
-      conanfile=../conan/conanfile_arm.txt
-      if [ "${enable_multinuma}" == "ON" ]; then
-        conanfile=../conan/conanfile_openmpi_arm.txt
-      fi
-      cp -f ../conan/conanprofile_armclang.aarch64 ~/.conan/profiles/dashinfer_compiler_profile
-      cp -r ../conan/settings_arm.yml ~/.conan/settings.yml
+      conan_profile="../conan/conanprofile_armclang.aarch64"
+      conan_options="${conan_options} -o arm=True"
     fi
 
     if [ "$enable_glibcxx11_abi" == "ON" ]; then
-      conan profile update settings.compiler.libcxx=libstdc++11 dashinfer_compiler_profile
+      libcxx_setting="libstdc++11"
     else
-      conan profile update settings.compiler.libcxx=libstdc++ dashinfer_compiler_profile
+      libcxx_setting="libstdc++"
     fi
 
-    conan install ${conanfile} -pr dashinfer_compiler_profile -b missing -b protobuf -b gtest -b glog
+    conan install ../conan \
+      -pr:h ${conan_profile} \
+      -s compiler.libcxx=${libcxx_setting} \
+      -of . \
+      --build=missing \
+      --build=protobuf \
+      --build=gtest \
+      --build=glog \
+      ${conan_options}
     cd ../
 fi
 
 cd ${build_folder}
-source ./activate.sh
+source ./conanbuild.sh
 export PATH=`pwd`/bin:$PATH
 
 if [ "${with_platform,,}" == "cuda" ]; then
   cmake .. \
+      -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=${build_type} \
       -DBUILD_PACKAGE=${build_package} \
       -DCONFIG_ACCELERATOR_TYPE=CUDA \
@@ -110,6 +116,7 @@ if [ "${with_platform,,}" == "cuda" ]; then
       -DENABLE_MULTINUMA=OFF
 elif [ "${with_platform,,}" == "x86" ]; then
   cmake .. \
+      -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=${build_type} \
       -DBUILD_PACKAGE=${build_package} \
       -DCONFIG_ACCELERATOR_TYPE=NONE \
@@ -124,6 +131,7 @@ elif [ "${with_platform,,}" == "x86" ]; then
       -DENABLE_MULTINUMA=${enable_multinuma}
 elif [ "${with_platform,,}" == "armclang" ]; then
   cmake .. \
+      -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=${build_type} \
       -DBUILD_PACKAGE=${build_package} \
       -DCONFIG_ACCELERATOR_TYPE=NONE \
