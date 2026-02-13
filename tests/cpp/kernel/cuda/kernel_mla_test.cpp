@@ -15,6 +15,12 @@
 #include <core/kernel/cuda/cuda_kernel.h>
 #include <cuda/cuda_context.h>
 
+#if ENABLE_SPAN_ATTENTION
+#include <runtime/cache/frame_manager.h>
+#include <runtime/cache/span_manager.h>
+#include <runtime/cache/virtual_cache.h>
+#endif
+
 #if CUDA_VERSION >= 12030
 #include <core/kernel/cuda/flashmla/flashmla.h>
 #endif
@@ -276,3 +282,115 @@ TEST(MLA_KERNEL, WorkspaceAllocation) {
   GTEST_SKIP() << "FlashMLA requires CUDA >= 12.3";
 #endif
 }
+
+// ---------------------------------------------------------------------------
+//  Test: MLA KV cache sizing with kv_cache_dim
+// ---------------------------------------------------------------------------
+#if ENABLE_SPAN_ATTENTION
+TEST(MLA_KERNEL, PrefixCacheCompatibility) {
+  using namespace allspark;
+
+  const int kv_cache_dim = KV_CACHE_DIM;  // 576
+  const int span_len = 128;
+  const int num_layers = 2;
+  const int init_frames = 64;
+
+  auto cache_config = SpanCacheConfig::Create(
+      AsCacheMode::AsCacheDefault, span_len, init_frames, 0);
+
+  size_t span_bytes = CacheUtils::GetSpanSizeInBytes(
+      *cache_config, DataType::BFLOAT16, 1, kv_cache_dim);
+  EXPECT_EQ(span_bytes, span_len * kv_cache_dim * sizeof(uint16_t));
+
+  size_t standard_span_bytes = CacheUtils::GetSpanSizeInBytes(
+      *cache_config, DataType::BFLOAT16, 128, 56);
+  EXPECT_GT(standard_span_bytes, span_bytes);
+  float savings = (float)standard_span_bytes / span_bytes;
+  LOG(INFO) << "MLA cache saves " << savings << "x vs standard sizing";
+
+  auto frame_manager = std::make_shared<ConcurrentCacheFrameManager>(
+      DeviceType::CUDA, init_frames);
+  auto span_manager =
+      std::make_shared<ConcurrentCacheSpanManager>(frame_manager);
+  span_manager->Init(static_cast<int64_t>(span_bytes));
+
+  EXPECT_TRUE(span_manager->Inited());
+
+  auto k_cache = std::make_shared<SpannedVirtualCache>(
+      span_manager, cache_config, "k_cache", num_layers);
+  auto v_cache = std::make_shared<SpannedVirtualCache>(
+      span_manager, cache_config, "v_cache", num_layers);
+
+  const int max_seq_len = 4096;
+  const int max_num_spans = (max_seq_len + span_len - 1) / span_len;
+
+  for (int layer_id = 0; layer_id < num_layers; layer_id++) {
+    ASSERT_EQ(k_cache->InitLayer(layer_id, 1, kv_cache_dim, 0, max_num_spans),
+              AsStatus::ALLSPARK_SUCCESS);
+    ASSERT_EQ(v_cache->InitLayer(layer_id, 1, kv_cache_dim, 0, max_num_spans),
+              AsStatus::ALLSPARK_SUCCESS);
+  }
+
+  size_t pres_count = frame_manager->PresFrame(init_frames);
+  ASSERT_EQ(pres_count, (size_t)init_frames);
+
+  const auto& k_ptrs_l0 = k_cache->GetCache(0, span_len);
+  const auto& v_ptrs_l0 = v_cache->GetCache(0, span_len);
+  EXPECT_EQ(k_cache->GetSeqLength(0), (size_t)span_len);
+
+  const auto& k_ptrs_l1 = k_cache->GetCache(1, span_len);
+  const auto& v_ptrs_l1 = v_cache->GetCache(1, span_len);
+
+  auto& k_layer0_cache = k_cache->GetLayerCache()[0];
+  ASSERT_GT(k_layer0_cache->GetSpanNum(), 0u);
+  int64_t frame_size = k_layer0_cache->GetCacheSpan(0)->Size();
+  EXPECT_EQ(frame_size, static_cast<int64_t>(span_bytes));
+
+  // Simulate prefix cache: save spans, create new caches, FillCache
+  std::vector<CacheSpan::Ptr> saved_k_spans(num_layers);
+  std::vector<CacheSpan::Ptr> saved_v_spans(num_layers);
+  for (int layer_id = 0; layer_id < num_layers; layer_id++) {
+    saved_k_spans[layer_id] =
+        k_cache->GetLayerCache()[layer_id]->GetCacheSpan(0);
+    saved_v_spans[layer_id] =
+        v_cache->GetLayerCache()[layer_id]->GetCacheSpan(0);
+    saved_k_spans[layer_id]->RefCacheSpan();
+    saved_v_spans[layer_id]->RefCacheSpan();
+  }
+
+  auto k_cache2 = std::make_shared<SpannedVirtualCache>(
+      span_manager, cache_config, "k_cache2", num_layers);
+  auto v_cache2 = std::make_shared<SpannedVirtualCache>(
+      span_manager, cache_config, "v_cache2", num_layers);
+  for (int layer_id = 0; layer_id < num_layers; layer_id++) {
+    ASSERT_EQ(
+        k_cache2->InitLayer(layer_id, 1, kv_cache_dim, 0, max_num_spans),
+        AsStatus::ALLSPARK_SUCCESS);
+    ASSERT_EQ(
+        v_cache2->InitLayer(layer_id, 1, kv_cache_dim, 0, max_num_spans),
+        AsStatus::ALLSPARK_SUCCESS);
+  }
+
+  k_cache2->FillCache(saved_k_spans);
+  v_cache2->FillCache(saved_v_spans);
+
+  for (int layer_id = 0; layer_id < num_layers; layer_id++) {
+    void* new_k_data = k_cache2->GetLayerCache()[layer_id]->GetCacheSpan(0)->Data();
+    void* orig_k_data = saved_k_spans[layer_id]->Data();
+    EXPECT_EQ(new_k_data, orig_k_data)
+        << "Layer " << layer_id << ": FillCache should reuse same span data";
+  }
+
+  EXPECT_EQ(k_cache2->GetSeqLength(0), (size_t)span_len);
+
+  for (int layer_id = 0; layer_id < num_layers; layer_id++) {
+    saved_k_spans[layer_id]->UnrefCacheSpan();
+    saved_v_spans[layer_id]->UnrefCacheSpan();
+  }
+
+  LOG(INFO) << "MLA prefix cache compatibility test passed: "
+            << "frame_size=" << span_bytes << " bytes, "
+            << num_layers << " layers, "
+            << "savings=" << savings << "x vs standard";
+}
+#endif  // ENABLE_SPAN_ATTENTION

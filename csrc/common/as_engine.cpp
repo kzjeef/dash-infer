@@ -551,6 +551,7 @@ AsStatus AsEngineImpl::BuildModel(
   device_ctx_->SetSizePerHead(model_ir->model_conf().size_per_head());
   device_ctx_->SetIntermediateSize(model_ir->model_conf().intermediate_size());
   device_ctx_->SetDecoderLayer(model_ir->model_conf().dec_layer());
+  device_ctx_->SetKVCacheDim(model_ir->model_conf().kv_cache_dim());
   device_ctx_->SetDtype(model_ir->model_conf().dtype());
   device_ctx_->SetLoraMaxNum(model_config.lora_max_num);
   device_ctx_->SetLoraMaxRank(model_config.lora_max_rank);

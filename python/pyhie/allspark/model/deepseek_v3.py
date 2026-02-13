@@ -72,6 +72,27 @@ class DeepSeek_v3(Model):
         v_head_dim = torch_cfg.get('v_head_dim', 128)
         routed_scaling_factor = torch_cfg.get('routed_scaling_factor', 2.5)
 
+        # MLA KV cache dimension (kv_lora_rank + qk_rope_head_dim)
+        cfg.kv_cache_dim = kv_lora_rank + qk_rope_head_dim
+
+        # RoPE config
+        rope_base = torch_cfg.get('rotary_emb_base',
+                                   torch_cfg.get('rope_theta', 10000.0))
+        rope_scaling = torch_cfg.get('rope_scaling', None)
+        self.yarn_attrs = {}
+        if rope_scaling and rope_scaling.get('type') == 'yarn':
+            self.yarn_attrs = {
+                "yarn_factor": float(rope_scaling.get('factor', 1.0)),
+                "yarn_original_max_pos": int(
+                    rope_scaling.get('original_max_position_embeddings', 4096)),
+                "yarn_beta_fast": float(rope_scaling.get('beta_fast', 32)),
+                "yarn_beta_slow": float(rope_scaling.get('beta_slow', 1)),
+                "yarn_mscale": float(rope_scaling.get('mscale', 1.0)),
+                "yarn_mscale_all_dim": float(
+                    rope_scaling.get('mscale_all_dim', 1.0)),
+            }
+        self.rope_base = rope_base
+
         # Number of dense layers (first N layers use standard FFN, rest use MoE)
         first_k_dense_replace = torch_cfg.get('first_k_dense_replace', 3)
         moe_intermediate_size = torch_cfg.get('moe_intermediate_size', 2048)
@@ -341,17 +362,20 @@ class DeepSeek_v3(Model):
             # MLA attention: the operator handles all internal projections
             # (q_a_proj, q_a_norm, q_b_proj, kv_a_proj, kv_a_norm, kv_b_proj)
             # as well as RoPE application and attention computation.
-            mla_attn = MLAAttention(
-                prefix + "attention",
-                [first_ln.outputs[0], mask.outputs[0]],
-                {
+            mla_attrs = {
                     "num_heads": cfg.num_heads,
                     "kv_lora_rank": kv_lora_rank,
                     "q_lora_rank": q_lora_rank,
                     "qk_nope_head_dim": qk_nope_head_dim,
                     "qk_rope_head_dim": qk_rope_head_dim,
                     "v_head_dim": v_head_dim,
-                },
+                    "rope_base": self.rope_base,
+            }
+            mla_attrs.update(self.yarn_attrs)
+            mla_attn = MLAAttention(
+                prefix + "attention",
+                [first_ln.outputs[0], mask.outputs[0]],
+                mla_attrs,
             )()
 
             attn_out_gemm = self.make_gemm_op(

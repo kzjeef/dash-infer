@@ -71,6 +71,9 @@ if(ENABLE_CUDA)
 add_executable(cpp_kernel_test ${KERNEL_TEST_SRCS})
 target_include_directories(cpp_kernel_test PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/kernel/cuda/)
 target_link_libraries(cpp_kernel_test test_as_common CONAN_PKG::protobuf CONAN_PKG::zlib allspark_kernel)
+if(ENABLE_SPAN_ATTENTION)
+  target_compile_definitions(cpp_kernel_test PRIVATE ENABLE_SPAN_ATTENTION=1)
+endif()
 endif()
 
 

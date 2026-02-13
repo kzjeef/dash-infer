@@ -68,6 +68,8 @@ class DeviceContext {
   void SetNumberHeads(int num_heads) { num_heads_ = num_heads; }
   void SetDecoderLayer(int dec_layer) { dec_layer_ = dec_layer; }
   void SetSizePerHead(int size_per_head) { size_per_head_ = size_per_head; }
+  void SetKVCacheDim(int d) { kv_cache_dim_ = d; }
+  int GetKVCacheDim() const { return kv_cache_dim_; }
   void SetNumberGroups(int num_groups) { num_groups_ = num_groups; }
   void SetIntermediateSize(int intermediate_size) {
     intermediate_size_ = intermediate_size;
@@ -156,6 +158,7 @@ class DeviceContext {
     SetNumberHeads(other_ctx->GetNumberHeads());
     SetDecoderLayer(other_ctx->GetDecoderLayer());
     SetSizePerHead(other_ctx->GetSizePerHead());
+    SetKVCacheDim(other_ctx->GetKVCacheDim());
     SetNumberGroups(other_ctx->GetNumberGroups());
     SetIntermediateSize(other_ctx->GetIntermediateSize());
     SetUseTorchSample(other_ctx->GetUseTorchSample());
@@ -185,6 +188,7 @@ class DeviceContext {
   int num_heads_ = 0;
   int dec_layer_ = 0;
   int size_per_head_ = 0;
+  int kv_cache_dim_ = 0;
   int num_groups_ = 0;
   int intermediate_size_ = 0;
   bool use_torch_sample_ = false;

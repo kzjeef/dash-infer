@@ -54,6 +54,27 @@ AsStatus MLAAttnOp::Init(const OperatorProto& op_proto,
     rope_base_ = *(float*)(attr_map.at("rope_base").c_str());
   }
 
+  // YaRN RoPE scaling parameters
+  if (attr_map.find("yarn_factor") != attr_map.end()) {
+    yarn_factor_ = *(float*)(attr_map.at("yarn_factor").c_str());
+    use_yarn_ = (yarn_factor_ > 1.0f);
+  }
+  if (attr_map.find("yarn_original_max_pos") != attr_map.end()) {
+    yarn_original_max_pos_ = *(int*)(attr_map.at("yarn_original_max_pos").c_str());
+  }
+  if (attr_map.find("yarn_beta_fast") != attr_map.end()) {
+    yarn_beta_fast_ = *(float*)(attr_map.at("yarn_beta_fast").c_str());
+  }
+  if (attr_map.find("yarn_beta_slow") != attr_map.end()) {
+    yarn_beta_slow_ = *(float*)(attr_map.at("yarn_beta_slow").c_str());
+  }
+  if (attr_map.find("yarn_mscale") != attr_map.end()) {
+    yarn_mscale_ = *(float*)(attr_map.at("yarn_mscale").c_str());
+  }
+  if (attr_map.find("yarn_mscale_all_dim") != attr_map.end()) {
+    yarn_mscale_all_dim_ = *(float*)(attr_map.at("yarn_mscale_all_dim").c_str());
+  }
+
   hidden_size_ = ctx_->GetNumberHeads() * ctx_->GetSizePerHead();
   num_heads_ = ctx_->GetNumberHeads();
 

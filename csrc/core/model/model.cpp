@@ -201,16 +201,27 @@ AsStatus AsModel::Init(const TransformerProto& model_proto,
       }
 #endif
 
-      if (num_cache_heads % rankInfo.rank_size != 0) {
-        LOG(ERROR) << "AsModel::Init: head number should be a multiple of "
-                   << "nranks, head number: " << num_cache_heads
-                   << ", nranks: " << rankInfo.rank_size;
-        return AsStatus::ALLSPARK_PARAM_ERROR;
+      int kv_cache_dim = ctx.GetKVCacheDim();
+      size_t span_bytes_z;
+      if (kv_cache_dim > 0) {
+        // MLA mode: use kv_cache_dim directly (no nranks division —
+        // the MLA latent is replicated on all GPUs)
+        span_bytes_z = CacheUtils::GetSpanSizeInBytes(
+            *(ctx.GetCacheConfig()), ctx.GetDtype(), 1, kv_cache_dim);
+        LOG(INFO) << "AsModel::Init: MLA cache mode, kv_cache_dim="
+                  << kv_cache_dim
+                  << ", span_bytes=" << span_bytes_z;
+      } else {
+        if (num_cache_heads % rankInfo.rank_size != 0) {
+          LOG(ERROR) << "AsModel::Init: head number should be a multiple of "
+                     << "nranks, head number: " << num_cache_heads
+                     << ", nranks: " << rankInfo.rank_size;
+          return AsStatus::ALLSPARK_PARAM_ERROR;
+        }
+        span_bytes_z = CacheUtils::GetSpanSizeInBytes(
+            *(ctx.GetCacheConfig()), ctx.GetDtype(),
+            num_cache_heads / rankInfo.rank_size, ctx.GetSizePerHead());
       }
-
-      size_t span_bytes_z = CacheUtils::GetSpanSizeInBytes(
-          *(ctx.GetCacheConfig()), ctx.GetDtype(),
-          num_cache_heads / rankInfo.rank_size, ctx.GetSizePerHead());
       if (span_bytes_z > std::numeric_limits<int64_t>::max()) {
         LOG(ERROR) << "AsModel::Init: span size in bytes exceeds int64_t, got "
                    << span_bytes_z;
@@ -778,13 +789,19 @@ AsStatus AsModel::StartRequest(std::shared_ptr<Request> request) {
     const int max_seq_len = ctx_->GetModelMaxLength();
     const int span_len = ctx_->GetCacheSpanSize();
     const int max_num_spans = (max_seq_len + span_len - 1) / span_len;
+    int cache_num_heads, cache_per_head_size;
+    if (ctx_->GetKVCacheDim() > 0) {
+      cache_num_heads = 1;
+      cache_per_head_size = ctx_->GetKVCacheDim();
+    } else {
+      cache_num_heads = ctx_->GetNumberHeads();
+      cache_per_head_size = ctx_->GetSizePerHead();
+    }
     for (int layer_id = 0; layer_id < ctx_->GetDecoderLayer(); layer_id++) {
       AS_CHECK_STATUS(gen_ctx->virtual_k_cache->InitLayer(
-          layer_id, ctx_->GetNumberHeads(), ctx_->GetSizePerHead(), 0,
-          max_num_spans));
+          layer_id, cache_num_heads, cache_per_head_size, 0, max_num_spans));
       AS_CHECK_STATUS(gen_ctx->virtual_v_cache->InitLayer(
-          layer_id, ctx_->GetNumberHeads(), ctx_->GetSizePerHead(), 0,
-          max_num_spans));
+          layer_id, cache_num_heads, cache_per_head_size, 0, max_num_spans));
     }
   }
 

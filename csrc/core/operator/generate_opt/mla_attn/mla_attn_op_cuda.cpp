@@ -13,13 +13,64 @@
 
 namespace allspark {
 
+static float yarn_find_correction_dim(float num_rotations, int dim, float base,
+                                      int max_position_embeddings) {
+  return (dim *
+          std::log(max_position_embeddings / (num_rotations * 2 * M_PI))) /
+         (2 * std::log(base));
+}
+
 void MLAAttnOpCUDA::computeInvFreq(float rope_base) {
   int freq_size = qk_rope_head_dim_ / 2;
   std::vector<float> inv_freq(freq_size);
-  for (int i = 0; i < freq_size; i++) {
-    float exponent = (float)(i * 2) / (float)qk_rope_head_dim_;
-    inv_freq[i] = 1.0f / std::pow(rope_base, exponent);
+
+  if (use_yarn_ && yarn_factor_ > 1.0f) {
+    // YaRN RoPE scaling (DeepSeek V3 default)
+    float scaling_factor = yarn_factor_;
+    float mscale = 1.0f;
+    if (yarn_mscale_all_dim_ > 0.0f) {
+      mscale = 0.1f * yarn_mscale_ * std::log(scaling_factor) + 1.0f;
+    }
+
+    std::vector<float> inv_freq_extra(freq_size);
+    std::vector<float> inv_freq_inter(freq_size);
+    for (int i = 0; i < freq_size; i++) {
+      float exponent = (float)(i * 2) / (float)qk_rope_head_dim_;
+      float theta = 1.0f / std::pow(rope_base, exponent);
+      inv_freq_extra[i] = theta;
+      inv_freq_inter[i] = theta / scaling_factor;
+    }
+
+    float low = std::floor(yarn_find_correction_dim(
+        yarn_beta_fast_, qk_rope_head_dim_, rope_base,
+        yarn_original_max_pos_));
+    float high = std::ceil(yarn_find_correction_dim(
+        yarn_beta_slow_, qk_rope_head_dim_, rope_base,
+        yarn_original_max_pos_));
+    low = std::max(low, 0.0f);
+    high = std::min(high, (float)(qk_rope_head_dim_ - 1));
+    if (low == high) {
+      high += 0.001f;
+    }
+
+    for (int i = 0; i < freq_size; i++) {
+      float x = ((float)i - low) / (high - low);
+      x = std::clamp(x, 0.0f, 1.0f);
+      x = 1.0f - x;
+      inv_freq[i] = (inv_freq_inter[i] * (1.0f - x) +
+                      inv_freq_extra[i] * x) * mscale;
+    }
+
+    LOG(INFO) << "MLAAttnOp: YaRN RoPE enabled, factor=" << scaling_factor
+              << ", original_max_pos=" << yarn_original_max_pos_
+              << ", mscale=" << mscale;
+  } else {
+    for (int i = 0; i < freq_size; i++) {
+      float exponent = (float)(i * 2) / (float)qk_rope_head_dim_;
+      inv_freq[i] = 1.0f / std::pow(rope_base, exponent);
+    }
   }
+
   rope_inv_freq_tensor_->SetShape(Shape{freq_size});
   rope_inv_freq_tensor_->CopyDataFrom(inv_freq.data(),
                                        sizeof(float) * freq_size,

@@ -96,6 +96,15 @@ class MLAAttnOp : public AsOperator {
   // RoPE base frequency (default 10000 for DeepSeek V3)
   float rope_base_ = 10000.0f;
 
+  // YaRN RoPE scaling parameters
+  bool use_yarn_ = false;
+  float yarn_factor_ = 1.0f;
+  int yarn_original_max_pos_ = 4096;
+  float yarn_beta_fast_ = 32.0f;
+  float yarn_beta_slow_ = 1.0f;
+  float yarn_mscale_ = 1.0f;
+  float yarn_mscale_all_dim_ = 1.0f;
+
   // KV cache dimension per token = kv_lora_rank + qk_rope_head_dim = 576
   int kv_cache_dim() const { return kv_lora_rank_ + qk_rope_head_dim_; }
   // Full QK head dim = qk_nope_head_dim + qk_rope_head_dim = 192

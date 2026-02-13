@@ -356,7 +356,9 @@ PYBIND11_MODULE(_allspark, m) {
       .def_property("num_experts_per_tok", &ConfigProto::num_experts_per_tok,
                     &ConfigProto::set_num_experts_per_tok)
       .def_property("intermediate_size", &ConfigProto::intermediate_size,
-                    &ConfigProto::set_intermediate_size);
+                    &ConfigProto::set_intermediate_size)
+      .def_property("kv_cache_dim", &ConfigProto::kv_cache_dim,
+                    &ConfigProto::set_kv_cache_dim);
 
 // major, minor is polluted by macro introduced by sys/sysmacros.h
 #ifdef major

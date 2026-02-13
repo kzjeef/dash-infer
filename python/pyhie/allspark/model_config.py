@@ -187,6 +187,19 @@ class DeepSeekV3ConfigAdapter(ModelConfigAdapter):
         self.model_config["routed_scaling_factor"] = getattr(
             hf_model_config, 'routed_scaling_factor', 2.5)
 
+        # KV cache dimension for MLA: kv_lora_rank + qk_rope_head_dim
+        kv_lora_rank = self.model_config["kv_lora_rank"]
+        qk_rope_head_dim = self.model_config["qk_rope_head_dim"]
+        self.model_config["kv_cache_dim"] = kv_lora_rank + qk_rope_head_dim
+
+        # Ensure rope_scaling is available (transformers may use rope_parameters)
+        if "rope_scaling" not in self.model_config or self.model_config.get("rope_scaling") is None:
+            rope_scaling = getattr(hf_model_config, 'rope_scaling', None)
+            if rope_scaling is None:
+                rope_scaling = self.model_config.get('rope_parameters', None)
+            if rope_scaling is not None:
+                self.model_config["rope_scaling"] = dict(rope_scaling)
+
         self.model_dtype = torch_dtype_to_as_dtype(hf_model_config.torch_dtype)
         if self.model_dtype is None:
             print(
