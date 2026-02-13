@@ -32,9 +32,8 @@ class DeepSeek_v3(Model):
 
     def _merge_gate_proj(self, torch_model):
         """Merge gate_proj and up_proj into gate_up_proj for dense FFN,
-        routed experts, and shared experts."""
-        new_model = {}
-        gate_keys = [k for k in torch_model.keys()
+        routed experts, and shared experts. Deletes originals to save memory."""
+        gate_keys = [k for k in list(torch_model.keys())
                      if "gate_proj.weight" in k]
         for key in gate_keys:
             up_proj_key = key.replace("gate_proj", "up_proj")
@@ -42,8 +41,10 @@ class DeepSeek_v3(Model):
                 new_key = key.replace("gate_proj", "gate_up_proj")
                 tensor = torch.concat([torch_model[key],
                                        torch_model[up_proj_key]]).cpu()
-                new_model[new_key] = tensor
-        torch_model.update(new_model)
+                torch_model[new_key] = tensor
+                # Delete originals to free ~2x memory
+                del torch_model[key]
+                del torch_model[up_proj_key]
 
     def _build_graph(self, torch_cfg, derive_type):
         cfg = self.model.model_conf
@@ -618,21 +619,31 @@ class DeepSeek_v3(Model):
         self_dtype_str = [
             k for k, v in Model.dtype_dict.items() if v == self.dtype
         ][0]
+        _evict = getattr(torch_weight, 'evict', None)
         for key, torch_name in weight_name_map.items():
             if isinstance(torch_name, list):
                 if "experts" in key:
                     tensor = (torch.stack(
                         [torch.permute(torch_weight[name], (1, 0)).contiguous()
                          for name in torch_name]).cpu())
+                    # Evict individual expert weights from lazy cache
+                    if _evict:
+                        for name in torch_name:
+                            _evict(name)
                 else:
                     tensor = (torch.concat(
                         [torch_weight[name] for name in torch_name]).cpu())
                     if key.find("weight") != -1:
                         tensor = torch.permute(tensor, (1, 0)).contiguous()
+                    if _evict:
+                        for name in torch_name:
+                            _evict(name)
             else:
                 tensor = torch_weight[torch_name].cpu()
                 if key.find("weight") != -1:
                     tensor = torch.permute(tensor, (1, 0)).contiguous()
+                if _evict:
+                    _evict(torch_name)
             self.validate_weight_dtype(key, tensor, self_dtype_str)
             mode = DENSE if key not in sparse_map else sparse_map[key]
             split_mode = NOSPLIT if key not in split_map else split_map[key]

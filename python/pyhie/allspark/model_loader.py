@@ -133,6 +133,101 @@ def get_state_dict(
     return _load_pt_weights(hf_weights_files)
 
 
+class LazySafetensorsDict(dict):
+    """A lazy state dict that loads weights from safetensors on-demand.
+
+    For large models (671B+), loading all weights into RAM at once causes OOM.
+    This dict loads individual tensors only when accessed and evicts them from
+    cache when set to an empty tensor (as _trans_weight does after serializing).
+
+    Peak memory: ~1-2 weight tensors instead of the full model.
+    """
+
+    def __init__(self, model_path, target_dtype=torch.bfloat16):
+        super().__init__()
+        self._model_path = Path(model_path)
+        self._target_dtype = target_dtype
+        self._key_to_file = {}
+        self._all_keys = set()
+
+        index_file = self._model_path / 'model.safetensors.index.json'
+        if index_file.exists():
+            with open(index_file) as f:
+                index = json.load(f)
+            for key, shard in index['weight_map'].items():
+                self._key_to_file[key] = str(self._model_path / shard)
+                self._all_keys.add(key)
+        else:
+            for sf in sorted(self._model_path.glob('*.safetensors')):
+                with safe_open(str(sf), framework='pt') as f:
+                    for key in f.keys():
+                        self._key_to_file[key] = str(sf)
+                        self._all_keys.add(key)
+
+        self._freed = set()
+        self._cache = {}
+
+    def _load_tensor(self, key):
+        if key in self._cache:
+            return self._cache[key]
+        if key in self._freed:
+            return torch.Tensor(0)
+        if key not in self._key_to_file:
+            raise KeyError(key)
+        shard_file = self._key_to_file[key]
+        with safe_open(shard_file, framework='pt') as f:
+            tensor = f.get_tensor(key)
+        if tensor.dtype != self._target_dtype and tensor.is_floating_point():
+            tensor = tensor.to(self._target_dtype)
+        self._cache[key] = tensor
+        return tensor
+
+    def __getitem__(self, key):
+        if key in self._freed:
+            return torch.Tensor(0)
+        return self._load_tensor(key)
+
+    def __setitem__(self, key, value):
+        if isinstance(value, torch.Tensor) and value.numel() == 0:
+            self._freed.add(key)
+            self._cache.pop(key, None)
+        else:
+            self._cache[key] = value
+
+    def __contains__(self, key):
+        return key in self._all_keys or key in self._cache
+
+    def __iter__(self):
+        return iter(self._all_keys | set(self._cache.keys()))
+
+    def keys(self):
+        return self._all_keys | set(self._cache.keys())
+
+    def items(self):
+        for k in self.keys():
+            yield k, self[k]
+
+    def get(self, key, default=None):
+        if key in self:
+            return self[key]
+        return default
+
+    def update(self, other):
+        if isinstance(other, dict):
+            for k, v in other.items():
+                self[k] = v
+
+    def __delitem__(self, key):
+        """Remove a key entirely (from cache and key set)."""
+        self._cache.pop(key, None)
+        self._all_keys.discard(key)
+        self._key_to_file.pop(key, None)
+
+    def evict(self, key):
+        """Remove a tensor from cache to free memory."""
+        self._cache.pop(key, None)
+
+
 class LazyFP8StateDict(dict):
     """A lazy state dict that loads and dequantizes FP8 weights on-demand.
 
@@ -260,6 +355,15 @@ class LazyFP8StateDict(dict):
         if key in self:
             return self[key]
         return default
+
+    def __delitem__(self, key):
+        self._cache.pop(key, None)
+        self._all_keys.discard(key)
+        self._key_to_file.pop(key, None)
+
+    def evict(self, key):
+        """Remove a tensor from cache to free memory."""
+        self._cache.pop(key, None)
 
     def update(self, other):
         if isinstance(other, dict):
@@ -612,13 +716,10 @@ class HuggingFaceModel(LLM):
                         self.hf_model_path, target_dtype=convert_dtype,
                         fp8_block_size=tuple(fp8_block_size))
                 else:
-                    # Non-FP8: load all weights eagerly (original path)
-                    self.torch_model_state_dict = get_state_dict(
-                        self.hf_model_path, fall_back_to_pt=False,
-                        load_format="auto")
-                    for k, v in list(self.torch_model_state_dict.items()):
-                        if v.dtype != convert_dtype and v.is_floating_point():
-                            self.torch_model_state_dict[k] = v.to(convert_dtype)
+                    # Non-FP8: use lazy loading to avoid OOM on large models
+                    print(f"Using lazy safetensors loading (dtype={convert_dtype})")
+                    self.torch_model_state_dict = LazySafetensorsDict(
+                        self.hf_model_path, target_dtype=convert_dtype)
             except Exception as e:
                 print(f"exception when load model: {self.hf_model_path} , exception: {e}")
                 raise ModelSerializerException("error load from ", 1, self)
