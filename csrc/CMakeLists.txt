@@ -13,14 +13,16 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unknown-pragmas")  # ~200 warnings
 message(STATUS "Subdirectory csrc CMAKE_CXX_FLAGS:${CMAKE_CXX_FLAGS}")
 
 set(PROTO_RAW_FILES ${CMAKE_CURRENT_SOURCE_DIR}/proto/allspark.proto)
-protobuf_generate_cpp(PROTO_SRCS PROTO_HDRS  ${PROTO_RAW_FILES})
+set(PROTO_SRCS ${CMAKE_CURRENT_BINARY_DIR}/allspark.pb.cc)
+set(PROTO_HDRS ${CMAKE_CURRENT_BINARY_DIR}/allspark.pb.h)
 message(STATUS "Protobuf file: ${PROTO_SRCS}, ${PROTO_HDRS}")
-# 在执行 add_subdirectory 之前先执行 protobuf_generate_cpp
 add_custom_command(
     OUTPUT ${PROTO_SRCS} ${PROTO_HDRS}
-    COMMAND ${PROTOBUF_PROTOC_EXECUTABLE} --cpp_out=${CMAKE_CURRENT_BINARY_DIR} ${PROTO_RAW_FILES}
-    DEPENDS ${PROTO_FILES}
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMAND ${PROTOBUF_PROTOC_EXECUTABLE}
+        -I${CMAKE_CURRENT_SOURCE_DIR}/proto
+        --cpp_out=${CMAKE_CURRENT_BINARY_DIR}
+        ${PROTO_RAW_FILES}
+    DEPENDS ${PROTO_RAW_FILES}
 )
 add_custom_target(protobuf_target DEPENDS ${PROTO_SRCS} ${PROTO_HDRS})
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/core/kernel)

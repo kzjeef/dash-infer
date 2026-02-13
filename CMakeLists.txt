@@ -141,9 +141,14 @@ add_definitions(-DALLSPARK_VERSION_PATCH="${PROJECT_VERSION_PATCH}")
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 
 find_package(Protobuf REQUIRED)
-# Conan 2.x may only set Protobuf_PROTOC_EXECUTABLE; ensure legacy variable is set
-if(NOT PROTOBUF_PROTOC_EXECUTABLE AND TARGET protobuf::protoc)
-    get_target_property(PROTOBUF_PROTOC_EXECUTABLE protobuf::protoc IMPORTED_LOCATION)
+# Conan 2.x: ensure we use protoc from the Conan package, not the system one.
+# protobuf_PACKAGE_FOLDER_RELEASE is set by Conan's generated cmake files.
+if(protobuf_PACKAGE_FOLDER_RELEASE AND EXISTS "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc")
+    set(Protobuf_PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc" CACHE FILEPATH "" FORCE)
+    set(PROTOBUF_PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc" CACHE FILEPATH "" FORCE)
+    message(STATUS "Using Conan protoc: ${PROTOBUF_PROTOC_EXECUTABLE}")
+elseif(PROTOBUF_PROTOC_EXECUTABLE)
+    message(STATUS "Using protoc: ${PROTOBUF_PROTOC_EXECUTABLE}")
 endif()
 find_package(glog REQUIRED)
 find_package(ZLIB REQUIRED)
