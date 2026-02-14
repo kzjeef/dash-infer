@@ -145,6 +145,11 @@ class AsOperator {
     return AsStatus::ALLSPARK_SUCCESS;
   }
 
+  // Returns true if this operator cannot be captured in a CUDA graph
+  // (e.g., uses stack-allocated data for H2D, calls external libraries
+  // that do internal H2D + kernel launches).
+  virtual bool IsGraphUnsafe() const { return false; }
+
   virtual AsStatus Init(const OperatorProto& op_proto, const DeviceContext& ctx,
                         const TensorMap& weights_map, TensorMap* tensor_map);
 };
