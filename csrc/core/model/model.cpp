@@ -86,6 +86,14 @@ AsModel::AsModel(const std::string& model_type)
 
   // pre-alloc enough request space.
   all_request_map_.reserve(1000);
+
+#ifdef ENABLE_CUDA
+  cuda_graph_enabled_ =
+      EnvVarConfig::GetInt("ALLSPARK_CUDA_GRAPH", 0) != 0;
+  if (cuda_graph_enabled_) {
+    LOG(INFO) << "CudaGraph: enabled via ALLSPARK_CUDA_GRAPH env var";
+  }
+#endif
 }
 
 AsTensor AsModel::GetOutputTensor(std::string tensor_name) {
@@ -993,6 +1001,14 @@ AsStatus AsModel::StopRequest(const std::string& request_id) {
   if (ctx_->GetRank() == 0) {
     LOG(INFO) << "Stop request with request id: " << request_id;
   }
+#ifdef ENABLE_CUDA
+  // Batch size changed — invalidate CUDA graph cache since tensor shapes
+  // (and potentially addresses) will change after reshape.
+  if (cuda_graph_enabled_ && !cuda_graph_cache_.empty()) {
+    DLOG(INFO) << "CudaGraph: invalidating cache due to batch size change";
+    CudaGraphClear();
+  }
+#endif
   if (runtime_ctx_->GetGenCtxListSize() > 0) {
     for (AsOperator* op : topo_ops_) {
       AsStatus status = op->CallReshape(runtime_ctx_.get());
@@ -1324,24 +1340,55 @@ AsStatus AsModel::GenerateContinueDecoder() {
     util::Timer t3;
     {
       TracerLog trace(ctx_->GetDeviceType(), "DecoderForward", 1);
-      for (auto& op : graph_ops_["decoder"]) {
-        AsStatus status = op->CallForward(runtime_ctx_.get());
+#ifdef ENABLE_CUDA
+      // Try CUDA graph replay for the decoder forward pass.
+      // On the first decode step for a given batch bucket, we run eagerly
+      // and then capture the graph. Subsequent steps replay the graph.
+      bool graph_replayed = false;
+      if (cuda_graph_enabled_) {
+        graph_replayed = CudaGraphTryReplay(batch_size);
+        if (!graph_replayed) {
+          // First step at this batch size — run eagerly, then capture
+          for (auto& op : graph_ops_["decoder"]) {
+            AsStatus status = op->CallForward(runtime_ctx_.get());
+            CHECK_CUDA_ERROR(op)
+            if (status != AsStatus::ALLSPARK_SUCCESS) {
+              LOG(ERROR) << "forward failed in loop::decoder" << std::endl;
+              return ErrorProcess(status);
+            }
+          }
+          // Capture the graph for future replays
+          auto cap_status = CudaGraphCapture(batch_size);
+          if (cap_status != AsStatus::ALLSPARK_SUCCESS) {
+            LOG(WARNING) << "CudaGraph: capture failed, will continue "
+                            "without graph for bucket "
+                         << CudaGraphBatchBucket(batch_size);
+          }
+        }
+      }
+      if (!cuda_graph_enabled_ || (!graph_replayed && false))
+#endif  // ENABLE_CUDA
+      {
+        // Eager execution (no CUDA graph)
+        for (auto& op : graph_ops_["decoder"]) {
+          AsStatus status = op->CallForward(runtime_ctx_.get());
 #if DEBUG_GEN_LAYER_SYNC
-        op->Synchronize();
+          op->Synchronize();
 #endif
 #if DEBUG_GEN_LAYER
-        if (debugCurrentRequest(
-                runtime_ctx_->GetGenCtx(0)->request->request_id)) {
-          op->PrintInformation();
+          if (debugCurrentRequest(
+                  runtime_ctx_->GetGenCtx(0)->request->request_id)) {
+            op->PrintInformation();
 #if DEBUG_GEN_LAYER_SAVE_NPY
-          DO_ARBITRATE(rank_, nranks_, gen_ctx_model_->step, op);
+            DO_ARBITRATE(rank_, nranks_, gen_ctx_model_->step, op);
 #endif
-        }
+          }
 #endif
-        CHECK_CUDA_ERROR(op)
-        if (status != AsStatus::ALLSPARK_SUCCESS) {
-          LOG(ERROR) << "forward failed in loop::decoder" << std::endl;
-          return ErrorProcess(status);
+          CHECK_CUDA_ERROR(op)
+          if (status != AsStatus::ALLSPARK_SUCCESS) {
+            LOG(ERROR) << "forward failed in loop::decoder" << std::endl;
+            return ErrorProcess(status);
+          }
         }
       }
     }
