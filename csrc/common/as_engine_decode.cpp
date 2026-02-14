@@ -254,13 +254,18 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
         decode_ret = AsStatus::ALLSPARK_RUNTIME_ERROR;
       }
     }
-    if (time_log && decode_ret == AsStatus::ALLSPARK_SUCCESS) {
-      long decode_us = t_decode.elapsed_micro();
-      long total_us = t_total.elapsed_micro();
-      LOG(INFO) << "EngineDecodeStep(us): total=" << total_us
-                << " alloc=" << alloc_us
-                << " decode=" << decode_us
-                << " overhead=" << (total_us - decode_us);
+    // Normalize: worker returns ALLSPARK_STREAMING on success (same as
+    // threadpool path which uses AS_STATUS_OK to keep failed_ret as SUCCESS)
+    if (AS_STATUS_OK(decode_ret)) {
+      if (time_log) {
+        long decode_us = t_decode.elapsed_micro();
+        long total_us = t_total.elapsed_micro();
+        LOG(INFO) << "EngineDecodeStep(us): total=" << total_us
+                  << " alloc=" << alloc_us
+                  << " decode=" << decode_us
+                  << " overhead=" << (total_us - decode_us);
+      }
+      return AsStatus::ALLSPARK_SUCCESS;
     }
     return decode_ret;
   }
