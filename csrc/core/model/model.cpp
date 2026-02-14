@@ -1345,13 +1345,14 @@ AsStatus AsModel::GenerateContinueDecoder() {
       // run attention/embedding eagerly between segments.
       bool used_cuda_graph = false;
       if (cuda_graph_enabled_) {
-        int bucket = CudaGraphBatchBucket(batch_size);
-        if (!cuda_graph_plans_.count(bucket)) {
+        // Use exact batch_size as cache key (not bucketed) to ensure
+        // captured graph dimensions match actual tensor shapes.
+        if (!cuda_graph_plans_.count(batch_size)) {
           // First decode at this batch size — build plan (eager + capture)
           auto status = CudaGraphBuildPlan(batch_size);
           if (status != AsStatus::ALLSPARK_SUCCESS) {
-            LOG(WARNING) << "CudaGraph: plan build failed for bucket "
-                         << bucket << ", falling back to eager";
+            LOG(WARNING) << "CudaGraph: plan build failed for batch "
+                         << batch_size << ", falling back to eager";
           } else {
             used_cuda_graph = true;
           }
@@ -1938,8 +1939,8 @@ void AsModel::CudaGraphClear() {
 }
 
 AsStatus AsModel::CudaGraphBuildPlan(int batch_size) {
-  int bucket = CudaGraphBatchBucket(batch_size);
-  if (cuda_graph_plans_.count(bucket)) {
+  // Use exact batch_size as key to ensure tensor dimensions match.
+  if (cuda_graph_plans_.count(batch_size)) {
     return AsStatus::ALLSPARK_SUCCESS;
   }
 
@@ -1978,7 +1979,7 @@ AsStatus AsModel::CudaGraphBuildPlan(int batch_size) {
     plan.segments.push_back({seg_start, n_ops, nullptr});
   }
 
-  LOG(INFO) << "CudaGraph: plan for bucket " << bucket << ": "
+  LOG(INFO) << "CudaGraph: plan for batch " << batch_size << ": "
             << plan.segments.size() << " graph segments, "
             << plan.eager_op_indices.size() << " eager ops";
 
@@ -1990,7 +1991,7 @@ AsStatus AsModel::CudaGraphBuildPlan(int batch_size) {
       LOG(ERROR) << "CudaGraph: beginCapture failed for segment ["
                  << seg.start_idx << "," << seg.end_idx << "): "
                  << cudaGetErrorString(err);
-      cuda_graph_plans_[bucket] = std::move(plan);
+      cuda_graph_plans_[batch_size] = std::move(plan);
       return AsStatus::ALLSPARK_RUNTIME_ERROR;
     }
 
@@ -2004,7 +2005,7 @@ AsStatus AsModel::CudaGraphBuildPlan(int batch_size) {
       LOG(ERROR) << "CudaGraph: endCapture failed for segment ["
                  << seg.start_idx << "," << seg.end_idx << ")";
       if (graph) cudaGraphDestroy(graph);
-      cuda_graph_plans_[bucket] = std::move(plan);
+      cuda_graph_plans_[batch_size] = std::move(plan);
       return AsStatus::ALLSPARK_RUNTIME_ERROR;
     }
 
@@ -2014,7 +2015,7 @@ AsStatus AsModel::CudaGraphBuildPlan(int batch_size) {
       LOG(ERROR) << "CudaGraph: instantiate failed for segment ["
                  << seg.start_idx << "," << seg.end_idx << ")";
       if (seg.exec) { cudaGraphExecDestroy(seg.exec); seg.exec = nullptr; }
-      cuda_graph_plans_[bucket] = std::move(plan);
+      cuda_graph_plans_[batch_size] = std::move(plan);
       return AsStatus::ALLSPARK_RUNTIME_ERROR;
     }
 
@@ -2023,15 +2024,14 @@ AsStatus AsModel::CudaGraphBuildPlan(int batch_size) {
               << (seg.end_idx - seg.start_idx) << " ops";
   }
 
-  cuda_graph_plans_[bucket] = std::move(plan);
+  cuda_graph_plans_[batch_size] = std::move(plan);
   return AsStatus::ALLSPARK_SUCCESS;
 }
 
 AsStatus AsModel::CudaGraphRunPiecewise(RuntimeContext* runtime_ctx) {
   int batch_size = runtime_ctx->GetGenCtxListSize();
-  int bucket = CudaGraphBatchBucket(batch_size);
 
-  auto it = cuda_graph_plans_.find(bucket);
+  auto it = cuda_graph_plans_.find(batch_size);
   if (it == cuda_graph_plans_.end()) {
     return AsStatus::ALLSPARK_RUNTIME_ERROR;
   }
