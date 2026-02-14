@@ -128,7 +128,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 #    add_definitions(-DCONFIG_OP_DEBUG)  # will print op forward, init, also sync after op forward.
 #    add_definitions(-DCONFIG_LOCK_DEBUG)  # will print mutex lock unlock
 else()
-    add_definitions(-DNVTX_DISABLE)
+    if(NOT DEFINED ENV{AS_ENABLE_NVTX})
+        add_definitions(-DNVTX_DISABLE)
+    else()
+        message(STATUS "NVTX enabled via AS_ENABLE_NVTX env var")
+    endif()
 endif()
 
 include(cmake/CheckGit.cmake)

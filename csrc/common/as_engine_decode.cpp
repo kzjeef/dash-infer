@@ -5,6 +5,9 @@
 
 #include "as_engine.h"
 
+#include <common/env_config.h>
+#include <utility/timer.h>
+
 namespace allspark {
 
 void AsEngineImpl::DecodeThread(
@@ -184,6 +187,11 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
   DLOG(INFO) << "[" << model_name << "] "
              << "AsEngineImpl::RunTextGenerationContinue" << std::endl;
 
+  static thread_local int time_log = -1;
+  if (time_log < 0)
+    time_log = EnvVarConfig::GetInt("ALLSPARK_TIME_LOG", 0);
+  util::Timer t_total;
+
   // check model registered
   if (model_irs_[model_name] == nullptr) {
     LOG(ERROR) << "[" << model_name << "] "
@@ -208,6 +216,10 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
   int64_t min_free_count = min_free_frame_count_.load();
 
   std::vector<int> pres_frame(nranks_);
+  util::Timer t_alloc;
+#ifdef ENABLE_CUDA
+  { Tracer __t_ae("AllocEnqueue", 2);
+#endif
   for (int i = 0; i < nranks_; ++i) {
     result[i] = threadpool_decode_->enqueue(
         i, [this, i, pending_num, min_free_count, &pres_frame]() {
@@ -227,15 +239,24 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
           }
         });
   }
+#ifdef ENABLE_CUDA
+  }  // end AllocEnqueue
+#endif
 
   bool has_fail = false;
   std::vector<AsStatus> tmp_ret(nranks_);
+#ifdef ENABLE_CUDA
+  { Tracer __t_aw("AllocWait", 3);
+#endif
   for (int i = 0; i < nranks_; ++i) {
     tmp_ret[i] = result[i].get();
     if (tmp_ret[i] != AsStatus::ALLSPARK_SUCCESS) {
       has_fail = true;
     }
   }
+#ifdef ENABLE_CUDA
+  }  // end AllocWait
+#endif
 
   for (int i = 0; i < nranks_; ++i) {
     AsStatus ret = tmp_ret[i];
@@ -259,11 +280,20 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
     return failed_ret;
   }
 
+  long alloc_us = t_alloc.elapsed_micro();
+  util::Timer t_decode;
+#ifdef ENABLE_CUDA
+  { Tracer __t_de("DecodeEnqueue", 1);
+#endif
   for (int i = 0; i < nranks_; ++i) {
     result[i] = threadpool_decode_->enqueue(i, [this, i]() {
       return workers_decode_[i]->RunTextGenerationContinue();
     });
   }
+#ifdef ENABLE_CUDA
+  }  // end DecodeEnqueue
+  { Tracer __t_dw("DecodeWait", 0);
+#endif
 
   for (int i = 0; i < nranks_; ++i) {
     try {
@@ -282,6 +312,17 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
         failed_ret = AsStatus::ALLSPARK_RUNTIME_ERROR;
       }
     }
+  }
+#ifdef ENABLE_CUDA
+  }  // end DecodeWait
+#endif
+  if (time_log && failed_ret == AsStatus::ALLSPARK_SUCCESS) {
+    long decode_us = t_decode.elapsed_micro();
+    long total_us = t_total.elapsed_micro();
+    LOG(INFO) << "EngineDecodeStep(us): total=" << total_us
+              << " alloc_tp=" << alloc_us
+              << " decode_tp=" << decode_us
+              << " overhead=" << (total_us - decode_us);
   }
   return failed_ret;
 }

@@ -1289,6 +1289,7 @@ AsStatus AsModel::GenerateContinueDecoder() {
 #ifdef ENABLE_CUDA
     // Flush deferred D2H from previous decode step (pipelined mode)
     if (pending_d2h_) {
+      Tracer __t_d2h("FlushD2H", 3);
       FlushPendingD2H();
     }
 #endif
@@ -1516,8 +1517,10 @@ AsStatus AsModel::GenerateContinueDecoder() {
         used_gen_graph = true;
       } else if (gen_op && plan.gen_graph_exec) {
         // Replay: update params, replay graph
-        gen_op->UpdateGraphParams(runtime_ctx_.get());
-        cudaGraphLaunch(plan.gen_graph_exec, stream);
+        { Tracer __t_gg("GenGraphReplay", 4);
+          gen_op->UpdateGraphParams(runtime_ctx_.get());
+          cudaGraphLaunch(plan.gen_graph_exec, stream);
+        }
 
         if (decode_pipeline_enabled_) {
           // Pipelined mode: async D2H on separate stream
@@ -1596,6 +1599,7 @@ AsStatus AsModel::GenerateContinueDecoder() {
     if (!pending_d2h_)
 #endif
     {
+      { Tracer __t_pg("PostGraph", 6);
       for (auto& op : graph_ops_["post_graph"]) {
         AsStatus status = op->CallReshape(runtime_ctx_.get());
         if (status != AsStatus::ALLSPARK_SUCCESS) {
@@ -1621,13 +1625,16 @@ AsStatus AsModel::GenerateContinueDecoder() {
           return ErrorProcess(status);
         }
       }
+      }  // end PostGraph Tracer scope
 
       // clean up the finished request
-      for (int i = runtime_ctx_->GetGenCtxListSize() - 1; i >= 0; i--) {
-        if (runtime_ctx_->GetGenCtx(i)->finish) {
-          auto ret =
-              StopRequest(runtime_ctx_->GetGenCtx(i)->request->request_id);
-          if (ret != AsStatus::ALLSPARK_SUCCESS) return ret;
+      { Tracer __t_fc("FinishCheck", 3);
+        for (int i = runtime_ctx_->GetGenCtxListSize() - 1; i >= 0; i--) {
+          if (runtime_ctx_->GetGenCtx(i)->finish) {
+            auto ret =
+                StopRequest(runtime_ctx_->GetGenCtx(i)->request->request_id);
+            if (ret != AsStatus::ALLSPARK_SUCCESS) return ret;
+          }
         }
       }
     }
@@ -2282,15 +2289,26 @@ AsStatus AsModel::CudaGraphRunPiecewise(RuntimeContext* runtime_ctx) {
   auto& ops = graph_ops_["decoder"];
   auto& plan = it->second;
 
+  static thread_local int log_enabled = -1;
+  if (log_enabled < 0)
+    log_enabled = EnvVarConfig::GetInt("ALLSPARK_TIME_LOG", 0);
+
+  util::Timer t_update;
   // Update step-dependent GPU buffers before replaying graphs
-  for (auto& op : ops) {
-    op->UpdateGraphParams(runtime_ctx);
+  {
+    Tracer __t_up("UpdateParams", 2);
+    for (auto& op : ops) {
+      op->UpdateGraphParams(runtime_ctx);
+    }
   }
+  long update_us = t_update.elapsed_micro();
 
   // Execute: interleave graph segments with eager ops
   int seg_idx = 0;
   int eager_idx = 0;
   int pos = 0;
+  long launch_us_total = 0;
+  long eager_us_total = 0;
 
   while (pos < static_cast<int>(ops.size())) {
     // Check if current position is a graph segment start
@@ -2298,7 +2316,11 @@ AsStatus AsModel::CudaGraphRunPiecewise(RuntimeContext* runtime_ctx) {
         pos == plan.segments[seg_idx].start_idx) {
       auto& seg = plan.segments[seg_idx];
       if (seg.exec) {
-        cudaGraphLaunch(seg.exec, stream);
+        util::Timer t_launch;
+        { Tracer __t_gl("GraphLaunch", 1);
+          cudaGraphLaunch(seg.exec, stream);
+        }
+        launch_us_total += t_launch.elapsed_micro();
       } else {
         // Fallback: run segment eagerly
         for (int i = seg.start_idx; i < seg.end_idx; i++) {
@@ -2311,7 +2333,12 @@ AsStatus AsModel::CudaGraphRunPiecewise(RuntimeContext* runtime_ctx) {
     // Check if current position is an eager op
     else if (eager_idx < static_cast<int>(plan.eager_op_indices.size()) &&
              pos == plan.eager_op_indices[eager_idx]) {
-      AsStatus status = ops[pos]->CallForward(runtime_ctx);
+      util::Timer t_eager;
+      AsStatus status;
+      { Tracer __t_eo("EagerOp", 5);
+        status = ops[pos]->CallForward(runtime_ctx);
+      }
+      eager_us_total += t_eager.elapsed_micro();
       if (status != AsStatus::ALLSPARK_SUCCESS) return status;
       pos++;
       eager_idx++;
@@ -2319,6 +2346,14 @@ AsStatus AsModel::CudaGraphRunPiecewise(RuntimeContext* runtime_ctx) {
       // Should not happen — skip
       pos++;
     }
+  }
+
+  if (log_enabled) {
+    LOG(INFO) << "CudaGraphRun(us): update=" << update_us
+              << " launch=" << launch_us_total
+              << " eager=" << eager_us_total
+              << " segs=" << plan.segments.size()
+              << " eager_ops=" << plan.eager_op_indices.size();
   }
 
   return AsStatus::ALLSPARK_SUCCESS;
