@@ -56,6 +56,12 @@ class AsOperator {
   AsStatus CallReshape(RuntimeContext* runtime_ctx);
   AsStatus CallAlloc(RuntimeContext* runtime_ctx);
 
+  // CUDA Graph support
+  virtual AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) {
+    return AsStatus::ALLSPARK_SUCCESS;
+  }
+  virtual bool IsGraphUnsafe() const { return false; }
+
   void Synchronize();
   void PrintInformation();
   void SaveInformation();
@@ -136,19 +142,6 @@ class AsOperator {
   virtual AsStatus Reshape();
   virtual AsStatus Reshape(RuntimeContext* runtime_ctx);
   virtual AsStatus Alloc(RuntimeContext* runtime_ctx);
-
-  // CUDA Graph support: update step-dependent GPU buffers before graph replay.
-  // Override in operators that pass per-step data as kernel arguments
-  // (e.g., RoPE position, KV cache sequence lengths, embedding step).
-  // Default implementation is a no-op (operator is graph-safe).
-  virtual AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) {
-    return AsStatus::ALLSPARK_SUCCESS;
-  }
-
-  // Returns true if this operator cannot be captured in a CUDA graph
-  // (e.g., uses stack-allocated data for H2D, calls external libraries
-  // that do internal H2D + kernel launches).
-  virtual bool IsGraphUnsafe() const { return false; }
 
   virtual AsStatus Init(const OperatorProto& op_proto, const DeviceContext& ctx,
                         const TensorMap& weights_map, TensorMap* tensor_map);

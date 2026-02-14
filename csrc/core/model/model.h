@@ -244,15 +244,28 @@ class AsModel {
 #endif
 
 #ifdef ENABLE_CUDA
-  // CUDA Graph support for decode phase
+  // Piecewise CUDA Graph support for decode phase.
+  // Captures graph-safe operator segments between graph-unsafe operators
+  // (attention, embedding). Unsafe ops run eagerly between graph replays.
+  struct CudaGraphSegment {
+    int start_idx;  // first op index in this segment (inclusive)
+    int end_idx;    // last op index in this segment (exclusive)
+    cudaGraphExec_t exec = nullptr;
+  };
+  struct CudaGraphPlan {
+    std::vector<CudaGraphSegment> segments;
+    // Indices of graph-unsafe ops that must run eagerly
+    std::vector<int> eager_op_indices;
+  };
+
   void CudaGraphClear();
-  bool CudaGraphTryReplay(int batch_size);
-  AsStatus CudaGraphCapture(int batch_size);
+  AsStatus CudaGraphBuildPlan(int batch_size);
+  AsStatus CudaGraphRunPiecewise(RuntimeContext* runtime_ctx);
   static int CudaGraphBatchBucket(int batch_size);
 
   bool cuda_graph_enabled_ = false;
-  // Map from batch-size bucket → captured graph executable
-  std::unordered_map<int, cudaGraphExec_t> cuda_graph_cache_;
+  // Map from batch-size bucket → piecewise execution plan
+  std::unordered_map<int, CudaGraphPlan> cuda_graph_plans_;
 #endif
 
  private:

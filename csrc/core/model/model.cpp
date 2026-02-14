@@ -1004,7 +1004,7 @@ AsStatus AsModel::StopRequest(const std::string& request_id) {
 #ifdef ENABLE_CUDA
   // Batch size changed — invalidate CUDA graph cache since tensor shapes
   // (and potentially addresses) will change after reshape.
-  if (cuda_graph_enabled_ && !cuda_graph_cache_.empty()) {
+  if (cuda_graph_enabled_ && !cuda_graph_plans_.empty()) {
     DLOG(INFO) << "CudaGraph: invalidating cache due to batch size change";
     CudaGraphClear();
   }
@@ -1341,24 +1341,31 @@ AsStatus AsModel::GenerateContinueDecoder() {
     {
       TracerLog trace(ctx_->GetDeviceType(), "DecoderForward", 1);
 #ifdef ENABLE_CUDA
-      // CUDA Graph decode — EXPERIMENTAL, not yet correct.
-      //
-      // Performance validated: graph replay reduces decoder forward from
-      // ~2.7ms to ~0.26ms (10x). But correctness fails because:
-      //
-      // 1. SpanAttnOp builds per-step span pointer arrays on the stack
-      //    in Forward(), which get captured as H2D copies with stale data.
-      // 2. DecOptEmbeddingOp passes step as a kernel argument.
-      //
-      // Fix requires either:
-      // (a) Piecewise graphs: capture non-attention segments, run attention
-      //     eagerly between segments (like vLLM's piecewise approach).
-      // (b) Split Forward() into updateParams() + launchKernels(), capture
-      //     only launchKernels(), call updateParams() before graph launch.
-      //
-      // For now, graph mode is disabled at runtime. The infrastructure
-      // (capture/replay/clear/invalidation) is in place for future use.
-      if (false && cuda_graph_enabled_)
+      // Piecewise CUDA Graph: capture graph-safe operator segments,
+      // run attention/embedding eagerly between segments.
+      bool used_cuda_graph = false;
+      if (cuda_graph_enabled_) {
+        int bucket = CudaGraphBatchBucket(batch_size);
+        if (!cuda_graph_plans_.count(bucket)) {
+          // First decode at this batch size — build plan (eager + capture)
+          auto status = CudaGraphBuildPlan(batch_size);
+          if (status != AsStatus::ALLSPARK_SUCCESS) {
+            LOG(WARNING) << "CudaGraph: plan build failed for bucket "
+                         << bucket << ", falling back to eager";
+          } else {
+            used_cuda_graph = true;
+          }
+        } else {
+          // Replay piecewise plan
+          auto status = CudaGraphRunPiecewise(runtime_ctx_.get());
+          if (status != AsStatus::ALLSPARK_SUCCESS) {
+            LOG(ERROR) << "CudaGraph: piecewise run failed";
+            return ErrorProcess(status);
+          }
+          used_cuda_graph = true;
+        }
+      }
+      if (!used_cuda_graph)
 #endif  // ENABLE_CUDA
       {
         // Eager execution (no CUDA graph)
@@ -1912,110 +1919,166 @@ ModelFactory& ModelFactory::getInstance() {
 #ifdef ENABLE_CUDA
 
 int AsModel::CudaGraphBatchBucket(int batch_size) {
-  // Round up to nearest power of 2
   int b = 1;
   while (b < batch_size) b <<= 1;
   return b;
 }
 
 void AsModel::CudaGraphClear() {
-  for (auto& [bucket, exec] : cuda_graph_cache_) {
-    if (exec) {
-      cudaGraphExecDestroy(exec);
+  for (auto& [bucket, plan] : cuda_graph_plans_) {
+    for (auto& seg : plan.segments) {
+      if (seg.exec) {
+        cudaGraphExecDestroy(seg.exec);
+        seg.exec = nullptr;
+      }
     }
   }
-  cuda_graph_cache_.clear();
-  DLOG(INFO) << "CudaGraph: cleared all cached graphs";
+  cuda_graph_plans_.clear();
+  LOG(INFO) << "CudaGraph: cleared all cached plans";
 }
 
-bool AsModel::CudaGraphTryReplay(int batch_size) {
-  if (!cuda_graph_enabled_) return false;
-
+AsStatus AsModel::CudaGraphBuildPlan(int batch_size) {
   int bucket = CudaGraphBatchBucket(batch_size);
-  auto it = cuda_graph_cache_.find(bucket);
-  if (it == cuda_graph_cache_.end() || it->second == nullptr) {
-    return false;
-  }
-
-  auto cuda_ctx = dynamic_cast<const CUDAContext*>(ctx_);
-  if (!cuda_ctx) return false;
-
-  cudaError_t err = cudaGraphLaunch(it->second, cuda_ctx->GetStream());
-  if (err != cudaSuccess) {
-    LOG(WARNING) << "CudaGraph: replay failed for bucket " << bucket
-                 << ": " << cudaGetErrorString(err);
-    return false;
-  }
-
-  DLOG(INFO) << "CudaGraph: replayed graph for bucket " << bucket
-             << " (actual batch=" << batch_size << ")";
-  return true;
-}
-
-AsStatus AsModel::CudaGraphCapture(int batch_size) {
-  int bucket = CudaGraphBatchBucket(batch_size);
-
-  // Already captured for this bucket
-  if (cuda_graph_cache_.count(bucket) && cuda_graph_cache_[bucket] != nullptr) {
+  if (cuda_graph_plans_.count(bucket)) {
     return AsStatus::ALLSPARK_SUCCESS;
   }
 
   auto cuda_ctx = dynamic_cast<const CUDAContext*>(ctx_);
-  if (!cuda_ctx) {
-    return AsStatus::ALLSPARK_RUNTIME_ERROR;
-  }
-
+  if (!cuda_ctx) return AsStatus::ALLSPARK_RUNTIME_ERROR;
   cudaStream_t stream = cuda_ctx->GetStream();
 
-  LOG(INFO) << "CudaGraph: capturing decoder forward for batch bucket "
-            << bucket << " (actual batch=" << batch_size << ")";
+  auto& ops = graph_ops_["decoder"];
+  int n_ops = static_cast<int>(ops.size());
 
-  // Begin capture
-  cudaError_t err =
-      cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
-  if (err != cudaSuccess) {
-    LOG(ERROR) << "CudaGraph: beginCapture failed: "
-               << cudaGetErrorString(err);
-    return AsStatus::ALLSPARK_RUNTIME_ERROR;
+  // Step 1: Run one eager forward to populate all step-dependent buffers
+  // (LayerCache for RoPE, etc.). This ensures that during capture, the
+  // IsCacheSet() checks return true and H2D copies are skipped.
+  for (auto& op : ops) {
+    AsStatus status = op->CallForward(runtime_ctx_.get());
+    if (status != AsStatus::ALLSPARK_SUCCESS) return status;
   }
 
-  // Run decoder forward — kernels are recorded, not executed
-  for (auto& op : graph_ops_["decoder"]) {
-    AsStatus status = op->CallForward(runtime_ctx_.get());
-    if (status != AsStatus::ALLSPARK_SUCCESS) {
-      // Abort capture on error
-      cudaGraph_t discard;
-      cudaStreamEndCapture(stream, &discard);
-      if (discard) cudaGraphDestroy(discard);
-      LOG(ERROR) << "CudaGraph: forward failed during capture";
-      return status;
+  // Step 2: Build piecewise plan — identify graph-safe segments
+  CudaGraphPlan plan;
+  int seg_start = -1;
+  for (int i = 0; i < n_ops; i++) {
+    if (ops[i]->IsGraphUnsafe()) {
+      // Close current segment if any
+      if (seg_start >= 0) {
+        plan.segments.push_back({seg_start, i, nullptr});
+        seg_start = -1;
+      }
+      plan.eager_op_indices.push_back(i);
+    } else {
+      if (seg_start < 0) seg_start = i;
     }
   }
+  // Close trailing segment
+  if (seg_start >= 0) {
+    plan.segments.push_back({seg_start, n_ops, nullptr});
+  }
 
-  // End capture
-  cudaGraph_t graph = nullptr;
-  err = cudaStreamEndCapture(stream, &graph);
-  if (err != cudaSuccess || graph == nullptr) {
-    LOG(ERROR) << "CudaGraph: endCapture failed: "
-               << cudaGetErrorString(err);
-    if (graph) cudaGraphDestroy(graph);
+  LOG(INFO) << "CudaGraph: plan for bucket " << bucket << ": "
+            << plan.segments.size() << " graph segments, "
+            << plan.eager_op_indices.size() << " eager ops";
+
+  // Step 3: Capture each segment
+  for (auto& seg : plan.segments) {
+    cudaError_t err =
+        cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
+    if (err != cudaSuccess) {
+      LOG(ERROR) << "CudaGraph: beginCapture failed for segment ["
+                 << seg.start_idx << "," << seg.end_idx << "): "
+                 << cudaGetErrorString(err);
+      cuda_graph_plans_[bucket] = std::move(plan);
+      return AsStatus::ALLSPARK_RUNTIME_ERROR;
+    }
+
+    for (int i = seg.start_idx; i < seg.end_idx; i++) {
+      ops[i]->CallForward(runtime_ctx_.get());
+    }
+
+    cudaGraph_t graph = nullptr;
+    err = cudaStreamEndCapture(stream, &graph);
+    if (err != cudaSuccess || !graph) {
+      LOG(ERROR) << "CudaGraph: endCapture failed for segment ["
+                 << seg.start_idx << "," << seg.end_idx << ")";
+      if (graph) cudaGraphDestroy(graph);
+      cuda_graph_plans_[bucket] = std::move(plan);
+      return AsStatus::ALLSPARK_RUNTIME_ERROR;
+    }
+
+    err = cudaGraphInstantiate(&seg.exec, graph, nullptr, nullptr, 0);
+    cudaGraphDestroy(graph);
+    if (err != cudaSuccess || !seg.exec) {
+      LOG(ERROR) << "CudaGraph: instantiate failed for segment ["
+                 << seg.start_idx << "," << seg.end_idx << ")";
+      if (seg.exec) { cudaGraphExecDestroy(seg.exec); seg.exec = nullptr; }
+      cuda_graph_plans_[bucket] = std::move(plan);
+      return AsStatus::ALLSPARK_RUNTIME_ERROR;
+    }
+
+    LOG(INFO) << "CudaGraph: captured segment [" << seg.start_idx << ","
+              << seg.end_idx << ") with "
+              << (seg.end_idx - seg.start_idx) << " ops";
+  }
+
+  cuda_graph_plans_[bucket] = std::move(plan);
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+AsStatus AsModel::CudaGraphRunPiecewise(RuntimeContext* runtime_ctx) {
+  int batch_size = runtime_ctx->GetGenCtxListSize();
+  int bucket = CudaGraphBatchBucket(batch_size);
+
+  auto it = cuda_graph_plans_.find(bucket);
+  if (it == cuda_graph_plans_.end()) {
     return AsStatus::ALLSPARK_RUNTIME_ERROR;
   }
 
-  // Instantiate executable graph
-  cudaGraphExec_t exec = nullptr;
-  err = cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
-  cudaGraphDestroy(graph);  // graph template no longer needed
+  auto cuda_ctx = dynamic_cast<const CUDAContext*>(ctx_);
+  cudaStream_t stream = cuda_ctx->GetStream();
+  auto& ops = graph_ops_["decoder"];
+  auto& plan = it->second;
 
-  if (err != cudaSuccess || exec == nullptr) {
-    LOG(ERROR) << "CudaGraph: instantiate failed: "
-               << cudaGetErrorString(err);
-    if (exec) cudaGraphExecDestroy(exec);
-    return AsStatus::ALLSPARK_RUNTIME_ERROR;
+  // Update step-dependent GPU buffers before replaying graphs
+  for (auto& op : ops) {
+    op->UpdateGraphParams(runtime_ctx);
   }
 
-  cuda_graph_cache_[bucket] = exec;
-  LOG(INFO) << "CudaGraph: captured graph for batch bucket " << bucket;
+  // Execute: interleave graph segments with eager ops
+  int seg_idx = 0;
+  int eager_idx = 0;
+  int pos = 0;
+
+  while (pos < static_cast<int>(ops.size())) {
+    // Check if current position is a graph segment start
+    if (seg_idx < static_cast<int>(plan.segments.size()) &&
+        pos == plan.segments[seg_idx].start_idx) {
+      auto& seg = plan.segments[seg_idx];
+      if (seg.exec) {
+        cudaGraphLaunch(seg.exec, stream);
+      } else {
+        // Fallback: run segment eagerly
+        for (int i = seg.start_idx; i < seg.end_idx; i++) {
+          ops[i]->CallForward(runtime_ctx);
+        }
+      }
+      pos = seg.end_idx;
+      seg_idx++;
+    }
+    // Check if current position is an eager op
+    else if (eager_idx < static_cast<int>(plan.eager_op_indices.size()) &&
+             pos == plan.eager_op_indices[eager_idx]) {
+      AsStatus status = ops[pos]->CallForward(runtime_ctx);
+      if (status != AsStatus::ALLSPARK_SUCCESS) return status;
+      pos++;
+      eager_idx++;
+    } else {
+      // Should not happen — skip
+      pos++;
+    }
+  }
 
   return AsStatus::ALLSPARK_SUCCESS;
 }
