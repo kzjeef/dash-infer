@@ -27,10 +27,21 @@ class GenerateOp : public AsOperator {
   // Post-processing after GPU sampling: NCCL bcast + D2H + CPU scatter.
   AsStatus RunSamplePostProcess(RuntimeContext* runtime_ctx);
 
+  // Pipelined post-processing: split into 3 phases for async D2H.
+  // Phase 1: NCCL bcast + CopyToVars on main stream. Saves ptrs_host.
+  AsStatus RunSampleGPUPost(RuntimeContext* runtime_ctx);
+  // Phase 2: Enqueue async D2H copy on d2h_stream (no sync).
+  AsStatus EnqueueSampleD2H(RuntimeContext* runtime_ctx,
+                             cudaStream_t d2h_stream);
+  // Phase 3: CPU scatter + UpdateProbs (call after D2H event sync).
+  AsStatus CompleteSampleD2H(RuntimeContext* runtime_ctx);
+
   // CUDA Graph support: update step-dependent buffers before graph replay.
   AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) override;
 
  private:
+  // Saved state between pipelined phases
+  std::vector<int64_t*> saved_ptrs_host_;
   BatchGencfg batch_gencfg_;
   int rank_id_ = 0;
   int nrank_ = 1;

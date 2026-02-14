@@ -270,6 +270,17 @@ class AsModel {
   bool cuda_graph_enabled_ = false;
   // Map from batch-size bucket → piecewise execution plan
   std::unordered_map<int, CudaGraphPlan> cuda_graph_plans_;
+
+  // Double-buffered D2H pipeline for decode
+  bool decode_pipeline_enabled_ = false;
+  cudaStream_t d2h_stream_ = nullptr;
+  cudaEvent_t d2h_done_event_ = nullptr;
+  cudaEvent_t compute_done_event_ = nullptr;
+  bool pending_d2h_ = false;
+  int pending_d2h_batch_size_ = 0;  // batch size when D2H was enqueued
+
+  void FlushPendingD2H();
+  void DestroyD2HResources();
 #endif
 
  private:

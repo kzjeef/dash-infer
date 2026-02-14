@@ -78,6 +78,24 @@ SaStatus CreateHandle(SpanAttnHandle** handle, DataType dataType,
   });
 }
 
+SaStatus UpdateSeqLengths(SpanAttnHandle* handle, const int* seqLen,
+                          int count) {
+  if (handle == nullptr) {
+    LOG(ERROR) << "UpdateSeqLengths: handle must not be null" << std::endl;
+    return SaStatus::PARAM_ERROR;
+  }
+
+  if (seqLen == nullptr) {
+    LOG(ERROR) << "UpdateSeqLengths: seqLen must not be null" << std::endl;
+    return SaStatus::PARAM_ERROR;
+  }
+
+  return api_body([=]() -> SaStatus {
+    handle->UpdateSeqLengths(seqLen, count);
+    return SaStatus::SUCCESS;
+  });
+}
+
 SaStatus DestroyHandle(SpanAttnHandle* handle) {
   if (handle == nullptr) {
     LOG(ERROR) << "DestroyHandle: handle must not be null" << std::endl;

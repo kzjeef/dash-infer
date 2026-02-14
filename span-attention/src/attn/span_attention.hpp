@@ -131,6 +131,13 @@ class SpanAttn {
            softmaxMappingsWsSize_;
   }
 
+  void UpdateSeqLengths(const int* seqLens, int count) {
+    for (int i = 0; i < batch_; i++) {
+      seqLengths_[i] =
+          (i < count) ? static_cast<uint32_t>(seqLens[i]) : uint32_t(0);
+    }
+  }
+
   /**
    *  Q: device memory
    *  KCachePtrs, VCachePtrs: device memory

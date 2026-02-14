@@ -588,6 +588,65 @@ AsStatus GenerateOp::RunSamplePostProcess(RuntimeContext* runtime_ctx) {
   return AsStatus::ALLSPARK_SUCCESS;
 }
 
+AsStatus GenerateOp::RunSampleGPUPost(RuntimeContext* runtime_ctx) {
+#ifdef ENABLE_CUDA
+  if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+    const CUDAContext* cuda_ctx = static_cast<const CUDAContext*>(ctx_);
+    if (cuda_ctx->GetNranks() > 1) {
+      AsStatus status = NcclBcast(dec_ids_, cuda_ctx);
+      if (status != AsStatus::ALLSPARK_SUCCESS) {
+        LOG(ERROR) << "forward failed in sampling (NCCL bcast)" << std::endl;
+        return status;
+      }
+    }
+
+    saved_ptrs_host_ = fill_generated_ids_gpu_enqueue(
+        runtime_ctx, dec_ids_, gen_ids_ptr_, cuda_ctx);
+  }
+#endif
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+AsStatus GenerateOp::EnqueueSampleD2H(RuntimeContext* runtime_ctx,
+                                       cudaStream_t d2h_stream) {
+#ifdef ENABLE_CUDA
+  if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+    fill_generated_ids_gpu_d2h(dec_ids_, dec_ids_host_, d2h_stream);
+  }
+#endif
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+AsStatus GenerateOp::CompleteSampleD2H(RuntimeContext* runtime_ctx) {
+#ifdef ENABLE_CUDA
+  if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+    // Use saved_ptrs_host_.size() NOT runtime_ctx->GetGenCtxListSize():
+    // batch may have grown since D2H was enqueued (new requests added).
+    int batch_size = static_cast<int>(saved_ptrs_host_.size());
+    fill_generated_ids_gpu_complete(saved_ptrs_host_, dec_ids_host_,
+                                    batch_size);
+    saved_ptrs_host_.clear();
+  }
+#endif
+
+  // UpdateProbs
+  int batch_stride = ctx_->GetMaxTopLogprobs();
+  int batch_size = runtime_ctx->GetGenCtxListSize();
+  if (rank_id_ == 0) {
+    if (runtime_ctx->is_context) {
+      UpdateProbs(runtime_ctx->GetContextGenCtx(), runtime_ctx, 0,
+                  batch_stride);
+    } else {
+      for (int i = 0; i < batch_size; i++) {
+        GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(i);
+        UpdateProbs(gen_ctx, runtime_ctx, i, batch_stride);
+      }
+    }
+  }
+
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
 AsStatus GenerateOp::UpdateGraphParams(RuntimeContext* runtime_ctx) {
 #ifdef ENABLE_CUDA
   if (ctx_->GetDeviceType() != DeviceType::CUDA || runtime_ctx->is_context) {

@@ -19,6 +19,7 @@
 #include <weight/weight_manager.h>
 
 #include <common/extra_embedding.hpp>
+#include <algorithm>
 #include <exception>
 #include <iomanip>
 #include <sstream>
@@ -93,6 +94,11 @@ AsModel::AsModel(const std::string& model_type)
       EnvVarConfig::GetInt("ALLSPARK_CUDA_GRAPH", 0) != 0;
   if (cuda_graph_enabled_) {
     LOG(INFO) << "CudaGraph: enabled via ALLSPARK_CUDA_GRAPH env var";
+  }
+  decode_pipeline_enabled_ =
+      EnvVarConfig::GetInt("ALLSPARK_DECODE_PIPELINE", 0) != 0;
+  if (decode_pipeline_enabled_) {
+    LOG(INFO) << "DecodePipeline: enabled via ALLSPARK_DECODE_PIPELINE env var";
   }
 #endif
 }
@@ -930,6 +936,15 @@ bool StopPenddingReuqest(const std::string& request_id,
 
 AsStatus AsModel::StopRequest(const std::string& request_id) {
   DLOG(INFO) << __FUNCTION__ << ": stop request_id: " << request_id;
+#ifdef ENABLE_CUDA
+  // If there's a pending deferred D2H, flush it first to avoid
+  // use-after-free when the request's interim data gets cleared below.
+  // FlushPendingD2H sets pending_d2h_ = false before calling StopRequest
+  // for finished requests, so this won't recurse.
+  if (pending_d2h_) {
+    FlushPendingD2H();
+  }
+#endif
   if (StopPenddingReuqest(request_id, pending_request_queue_)) {
     return AsStatus::ALLSPARK_SUCCESS;
   }
@@ -1271,6 +1286,13 @@ AsStatus AsModel::GenerateContinueDecoder() {
 
   const int async_token_num = 1;  // TODO gen_cfg.async_token_num
   for (int now_step = 0; now_step < async_token_num; now_step++) {
+#ifdef ENABLE_CUDA
+    // Flush deferred D2H from previous decode step (pipelined mode)
+    if (pending_d2h_) {
+      FlushPendingD2H();
+    }
+#endif
+
     int batch_size = runtime_ctx_->GetGenCtxListSize();
     if (batch_size == 0) {
       // LOG(INFO) << "Continue: empty batch size";
@@ -1493,19 +1515,49 @@ AsStatus AsModel::GenerateContinueDecoder() {
         }
         used_gen_graph = true;
       } else if (gen_op && plan.gen_graph_exec) {
-        // Replay: update params, replay graph, run post-process eagerly
+        // Replay: update params, replay graph
         gen_op->UpdateGraphParams(runtime_ctx_.get());
         cudaGraphLaunch(plan.gen_graph_exec, stream);
-        gen_op->RunSamplePostProcess(runtime_ctx_.get());
 
-        // Run non-GenerateOp gen_graph ops eagerly (UpdateIdOp, etc.)
-        for (auto& op : graph_ops_["gen_graph"]) {
-          if (!dynamic_cast<GenerateOp*>(op.get())) {
-            AsStatus status = op->CallForward(runtime_ctx_.get());
-            CHECK_CUDA_ERROR(op)
-            if (status != AsStatus::ALLSPARK_SUCCESS) {
-              LOG(ERROR) << "forward failed in loop::gen_graph" << std::endl;
-              return ErrorProcess(status);
+        if (decode_pipeline_enabled_) {
+          // Pipelined mode: async D2H on separate stream
+          // Lazy-init D2H stream and events
+          if (!d2h_stream_) {
+            AS_CHECK_CUDA(cudaStreamCreateWithFlags(&d2h_stream_,
+                                                    cudaStreamNonBlocking));
+            AS_CHECK_CUDA(cudaEventCreateWithFlags(&d2h_done_event_,
+                                                   cudaEventDisableTiming));
+            AS_CHECK_CUDA(cudaEventCreateWithFlags(&compute_done_event_,
+                                                   cudaEventDisableTiming));
+          }
+
+          // Phase 1: NCCL bcast + CopyToVars on main stream
+          gen_op->RunSampleGPUPost(runtime_ctx_.get());
+
+          // D2H stream must wait for main stream's CopyToVars to finish
+          AS_CHECK_CUDA(cudaEventRecord(compute_done_event_, stream));
+          AS_CHECK_CUDA(cudaStreamWaitEvent(d2h_stream_, compute_done_event_));
+
+          // Phase 2: Enqueue async D2H on d2h_stream
+          gen_op->EnqueueSampleD2H(runtime_ctx_.get(), d2h_stream_);
+          AS_CHECK_CUDA(cudaEventRecord(d2h_done_event_, d2h_stream_));
+          pending_d2h_ = true;
+          pending_d2h_batch_size_ = batch_size;
+
+          // UpdateIdOp, post_graph, finish check deferred to next call
+        } else {
+          // Synchronous mode: original flow
+          gen_op->RunSamplePostProcess(runtime_ctx_.get());
+
+          // Run non-GenerateOp gen_graph ops eagerly (UpdateIdOp, etc.)
+          for (auto& op : graph_ops_["gen_graph"]) {
+            if (!dynamic_cast<GenerateOp*>(op.get())) {
+              AsStatus status = op->CallForward(runtime_ctx_.get());
+              CHECK_CUDA_ERROR(op)
+              if (status != AsStatus::ALLSPARK_SUCCESS) {
+                LOG(ERROR) << "forward failed in loop::gen_graph" << std::endl;
+                return ErrorProcess(status);
+              }
             }
           }
         }
@@ -1539,37 +1591,44 @@ AsStatus AsModel::GenerateContinueDecoder() {
     }
 
     util::Timer t6;
-    for (auto& op : graph_ops_["post_graph"]) {
-      AsStatus status = op->CallReshape(runtime_ctx_.get());
-      if (status != AsStatus::ALLSPARK_SUCCESS) {
-        LOG(ERROR) << "reshape failed in post" << std::endl;
-        return ErrorProcess(status);
-      }
-      status = op->CallForward(runtime_ctx_.get());
+#ifdef ENABLE_CUDA
+    // In pipeline mode, post_graph and finish check are deferred
+    if (!pending_d2h_)
+#endif
+    {
+      for (auto& op : graph_ops_["post_graph"]) {
+        AsStatus status = op->CallReshape(runtime_ctx_.get());
+        if (status != AsStatus::ALLSPARK_SUCCESS) {
+          LOG(ERROR) << "reshape failed in post" << std::endl;
+          return ErrorProcess(status);
+        }
+        status = op->CallForward(runtime_ctx_.get());
 #if DEBUG_GEN_LAYER_SYNC
-      op->Synchronize();
+        op->Synchronize();
 #endif
 #if DEBUG_GEN_LAYER
-      if (debugCurrentRequest(
-              runtime_ctx_->GetGenCtx(0)->request->request_id)) {
-        op->PrintInformation();
+        if (debugCurrentRequest(
+                runtime_ctx_->GetGenCtx(0)->request->request_id)) {
+          op->PrintInformation();
 #if DEBUG_GEN_LAYER_SAVE_NPY
-        DO_ARBITRATE(rank_, nranks_, gen_ctx_model_->step, op);
+          DO_ARBITRATE(rank_, nranks_, gen_ctx_model_->step, op);
 #endif
-      }
+        }
 #endif
-      CHECK_CUDA_ERROR(op)
-      if (status != AsStatus::ALLSPARK_SUCCESS) {
-        LOG(ERROR) << "forward failed in post" << std::endl;
-        return ErrorProcess(status);
+        CHECK_CUDA_ERROR(op)
+        if (status != AsStatus::ALLSPARK_SUCCESS) {
+          LOG(ERROR) << "forward failed in post" << std::endl;
+          return ErrorProcess(status);
+        }
       }
-    }
 
-    // clean up the finished request
-    for (int i = runtime_ctx_->GetGenCtxListSize() - 1; i >= 0; i--) {
-      if (runtime_ctx_->GetGenCtx(i)->finish) {
-        auto ret = StopRequest(runtime_ctx_->GetGenCtx(i)->request->request_id);
-        if (ret != AsStatus::ALLSPARK_SUCCESS) return ret;
+      // clean up the finished request
+      for (int i = runtime_ctx_->GetGenCtxListSize() - 1; i >= 0; i--) {
+        if (runtime_ctx_->GetGenCtx(i)->finish) {
+          auto ret =
+              StopRequest(runtime_ctx_->GetGenCtx(i)->request->request_id);
+          if (ret != AsStatus::ALLSPARK_SUCCESS) return ret;
+        }
       }
     }
     util::Timer t7;
@@ -2012,7 +2071,11 @@ std::string AsModel::GetOpProfilingInfo() {
   }
   return ss.str();
 }
-AsModel::~AsModel() {}
+AsModel::~AsModel() {
+#ifdef ENABLE_CUDA
+  DestroyD2HResources();
+#endif
+}
 
 // --------------------------------------------------------------------------
 // //
@@ -2033,7 +2096,73 @@ int AsModel::CudaGraphBatchBucket(int batch_size) {
   return b;
 }
 
+void AsModel::FlushPendingD2H() {
+  if (!pending_d2h_) return;
+
+  // Wait for D2H to complete
+  AS_CHECK_CUDA(cudaEventSynchronize(d2h_done_event_));
+
+  // Find GenerateOp
+  GenerateOp* gen_op = nullptr;
+  for (auto& op : graph_ops_["gen_graph"]) {
+    gen_op = dynamic_cast<GenerateOp*>(op.get());
+    if (gen_op) break;
+  }
+
+  if (gen_op) {
+    // Phase 3: CPU scatter + UpdateProbs
+    gen_op->CompleteSampleD2H(runtime_ctx_.get());
+
+    // Run deferred UpdateIdOp (non-GenerateOp ops in gen_graph)
+    for (auto& op : graph_ops_["gen_graph"]) {
+      if (!dynamic_cast<GenerateOp*>(op.get())) {
+        op->CallForward(runtime_ctx_.get());
+      }
+    }
+
+    // Run deferred post_graph
+    for (auto& op : graph_ops_["post_graph"]) {
+      op->CallReshape(runtime_ctx_.get());
+      op->CallForward(runtime_ctx_.get());
+    }
+  }
+
+  // Clear pending flag BEFORE finish check to prevent recursion:
+  // StopRequest checks pending_d2h_ and would re-enter FlushPendingD2H.
+  pending_d2h_ = false;
+
+  // Deferred finish check — only check requests from the old batch.
+  // New requests added since enqueue haven't been decoded yet.
+  int check_count = std::min(pending_d2h_batch_size_,
+                             runtime_ctx_->GetGenCtxListSize());
+  for (int i = check_count - 1; i >= 0; i--) {
+    if (runtime_ctx_->GetGenCtx(i)->finish) {
+      StopRequest(runtime_ctx_->GetGenCtx(i)->request->request_id);
+    }
+  }
+}
+
+void AsModel::DestroyD2HResources() {
+  if (d2h_stream_) {
+    // Ensure any pending work completes before destroying
+    cudaStreamSynchronize(d2h_stream_);
+    cudaStreamDestroy(d2h_stream_);
+    d2h_stream_ = nullptr;
+  }
+  if (d2h_done_event_) {
+    cudaEventDestroy(d2h_done_event_);
+    d2h_done_event_ = nullptr;
+  }
+  if (compute_done_event_) {
+    cudaEventDestroy(compute_done_event_);
+    compute_done_event_ = nullptr;
+  }
+  pending_d2h_ = false;
+}
+
 void AsModel::CudaGraphClear() {
+  // Flush any pending D2H before clearing graphs
+  FlushPendingD2H();
   for (auto& [bucket, plan] : cuda_graph_plans_) {
     for (auto& seg : plan.segments) {
       if (seg.exec) {

@@ -113,6 +113,28 @@ AsStatus SpanAttnOp::decoderAppendCache(const RuntimeContext* runtime_ctx) {
     TensorUtils::DeepCopyVectorPart(*v_span_array_tensor_host_,
                                     batch * max_num_spans, v_cache_ptrs, 0,
                                     v_cache_ptrs.GetShape()[0]);
+    // Fill unused span slots with the first valid span pointer so that the
+    // GEMM-based QKV kernel (which reads all slots up to max_num_spans) can
+    // safely load from them. The attention weights for these positions are
+    // zero after softmax masking, so the loaded data doesn't affect output.
+    // Compute actual used spans from seq length (tensor shape may be max).
+    int num_used_spans =
+        (old_seq_lens[batch] + span_len - 1) / span_len;
+    if (num_used_spans < 1) num_used_spans = 1;
+    if (num_used_spans < max_num_spans) {
+      void* const* k_ptrs =
+          static_cast<void* const*>(k_cache_ptrs.GetDataPtr());
+      void* const* v_ptrs =
+          static_cast<void* const*>(v_cache_ptrs.GetDataPtr());
+      void** k_host =
+          static_cast<void**>(k_span_array_tensor_host_->GetDataPtr());
+      void** v_host =
+          static_cast<void**>(v_span_array_tensor_host_->GetDataPtr());
+      for (int s = num_used_spans; s < max_num_spans; s++) {
+        k_host[batch * max_num_spans + s] = k_ptrs[0];
+        v_host[batch * max_num_spans + s] = v_ptrs[0];
+      }
+    }
   }
 
   TensorUtils::DeepCopyFromStdVector(*decoder_seq_len_tensor_host_, 0,
