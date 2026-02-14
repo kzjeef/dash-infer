@@ -71,8 +71,8 @@ void TopPSoftmaxLauncher(int* topp_count, T* topp_probs, int* topp_indices,
                          hiednnCudaHandle_t handle, cudaStream_t stream) {
   constexpr bool SORT_ASCEND = false;
 
-  // clear previous errors
-  AS_CHECK_CUDA_LAST_ERROR();
+  // clear previous errors (graph-safe: may be called during CUDA graph capture)
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
 
   if (workspace == nullptr) {
     throw std::runtime_error(

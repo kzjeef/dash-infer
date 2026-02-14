@@ -207,14 +207,14 @@ void launchReduceMax(const T* x, OutT* y, T* blockRes, const int* taskLenPtr,
                        allspark::cuda::strided_softmax::reduce::functor::Max>
       <<<dim3(nBlocks, taskNum), BLOCK_1, 0, stream>>>(
           x, static_cast<T*>(nullptr), blockRes, taskLenPtr, stride);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
 
   reduce::reduceKernel<BLOCK_2, UNROLL, false,
                        allspark::cuda::strided_softmax::reduce::functor::Max>
       <<<dim3(1, taskNum), BLOCK_2, 0, stream>>>(
           blockRes, y, static_cast<T*>(nullptr), static_cast<int*>(nullptr),
           nBlocks);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   return;
 }
 
@@ -235,7 +235,7 @@ void launchRcpSumExp(const T* x, const typename ComputeT<T>::type* maxVal,
           x, static_cast<T*>(nullptr), blockRes, taskLenPtr, stride,
           allspark::cuda::strided_softmax::functor::MinusMaxExp<CompT>(
               maxVal, temperatures));
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
 
   reduce::reduceKernel<
       BLOCK_2, UNROLL, false,
@@ -245,7 +245,7 @@ void launchRcpSumExp(const T* x, const typename ComputeT<T>::type* maxVal,
       <<<dim3(1, taskNum), BLOCK_2, 0, stream>>>(
           blockRes, y, static_cast<CompT*>(nullptr), static_cast<int*>(nullptr),
           nBlocks);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   return;
 }
 
@@ -266,7 +266,7 @@ void launchLogSumExp(const T* x, const typename ComputeT<T>::type* maxVal,
           x, static_cast<T*>(nullptr), blockRes, taskLenPtr, stride,
           allspark::cuda::strided_softmax::functor::MinusMaxExp<CompT>(
               maxVal, temperatures));
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
 
   reduce::reduceKernel<
       BLOCK_2, UNROLL, false,
@@ -276,7 +276,7 @@ void launchLogSumExp(const T* x, const typename ComputeT<T>::type* maxVal,
       <<<dim3(1, taskNum), BLOCK_2, 0, stream>>>(
           blockRes, y, static_cast<CompT*>(nullptr), static_cast<int*>(nullptr),
           nBlocks);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   return;
 }
 
@@ -292,7 +292,7 @@ void launchExpMulRcp(const T* x, const typename ComputeT<T>::type* maxVal,
   uint32_t nBlocks = UIntDivUp<uint32_t>(stride, BLOCK * UNROLL);
   expMulRcpKernel<BLOCK, UNROLL><<<dim3(nBlocks, taskNum), BLOCK, 0, stream>>>(
       x, maxVal, rcpSumExp, y, taskLenPtr, temperatures, stride);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   return;
 }
 
@@ -308,7 +308,7 @@ void launchSubLog(const T* x, const typename ComputeT<T>::type* maxVal,
   uint32_t nBlocks = UIntDivUp<uint32_t>(stride, BLOCK * UNROLL);
   subLogKernel<BLOCK, UNROLL><<<dim3(nBlocks, taskNum), BLOCK, 0, stream>>>(
       x, maxVal, logSumExp, y, taskLenPtr, temperatures, stride);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   return;
 }
 

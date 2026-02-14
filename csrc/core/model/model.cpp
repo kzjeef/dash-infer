@@ -8,6 +8,7 @@
 #include <common/engine_runtime.h>
 #include <common/env_config.h>
 #include <common/memory_reuser.h>
+#include <core/operator/generate_opt/generate/generate_op.h>
 #include <core/operator/generate_opt/postprocess_id/postprocess_id_op.h>
 #include <core/operator/generate_opt/span_attn/span_attn_op.h>
 #include <core/operator/generate_opt/mla_attn/mla_attn_op.h>
@@ -1338,12 +1339,14 @@ AsStatus AsModel::GenerateContinueDecoder() {
     }
 
     util::Timer t3;
+#ifdef ENABLE_CUDA
+    bool used_cuda_graph = false;
+#endif
     {
       TracerLog trace(ctx_->GetDeviceType(), "DecoderForward", 1);
 #ifdef ENABLE_CUDA
       // Piecewise CUDA Graph: capture graph-safe operator segments,
       // run attention/embedding eagerly between segments.
-      bool used_cuda_graph = false;
       if (cuda_graph_enabled_) {
         // Use exact batch_size as cache key (not bucketed) to ensure
         // captured graph dimensions match actual tensor shapes.
@@ -1409,24 +1412,129 @@ AsStatus AsModel::GenerateContinueDecoder() {
     }
 
     util::Timer t5;
-    for (auto& op : graph_ops_["gen_graph"]) {
-      AsStatus status = op->CallForward(runtime_ctx_.get());
+#ifdef ENABLE_CUDA
+    // CUDA Graph for gen_graph: capture GenerateOp's GPU sampling kernels
+    // (process_logits + TopK/TopP/Sample + logprobs) to eliminate ~13
+    // kernel launch overheads per decode step.
+    bool used_gen_graph = false;
+    if (used_cuda_graph && cuda_graph_plans_.count(batch_size)) {
+      auto& plan = cuda_graph_plans_[batch_size];
+      auto cuda_ctx = dynamic_cast<const CUDAContext*>(ctx_);
+      cudaStream_t stream = cuda_ctx->GetStream();
+
+      // Find GenerateOp in gen_graph
+      GenerateOp* gen_op = nullptr;
+      for (auto& op : graph_ops_["gen_graph"]) {
+        gen_op = dynamic_cast<GenerateOp*>(op.get());
+        if (gen_op) break;
+      }
+
+      if (gen_op && !plan.gen_graph_captured) {
+        // First time: run gen_graph eagerly, then capture GPU kernels
+        for (auto& op : graph_ops_["gen_graph"]) {
+          AsStatus status = op->CallForward(runtime_ctx_.get());
+          CHECK_CUDA_ERROR(op)
+          if (status != AsStatus::ALLSPARK_SUCCESS) {
+            LOG(ERROR) << "forward failed in loop::gen_graph" << std::endl;
+            return ErrorProcess(status);
+          }
+        }
+
+        // Capture GenerateOp's GPU-only sampling kernels.
+        // Some kernels (e.g., hiednn TopP) may throw during capture due to
+        // internal error checks. We catch exceptions and always end capture
+        // to restore stream state.
+        cudaError_t err =
+            cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
+        if (err == cudaSuccess) {
+          bool capture_ok = true;
+          try {
+            gen_op->RunSampleGPU(runtime_ctx_.get());
+          } catch (const std::exception& e) {
+            LOG(WARNING) << "CudaGraph: gen_graph capture threw: " << e.what();
+            capture_ok = false;
+          } catch (...) {
+            LOG(WARNING) << "CudaGraph: gen_graph capture threw unknown error";
+            capture_ok = false;
+          }
+
+          cudaGraph_t graph = nullptr;
+          err = cudaStreamEndCapture(stream, &graph);
+          // Clear any CUDA error state from failed capture
+          cudaGetLastError();
+
+          if (capture_ok && err == cudaSuccess && graph) {
+            err = cudaGraphInstantiate(&plan.gen_graph_exec, graph, nullptr,
+                                       nullptr, 0);
+            cudaGraphDestroy(graph);
+            if (err == cudaSuccess && plan.gen_graph_exec) {
+              plan.gen_graph_captured = true;
+              LOG(INFO) << "CudaGraph: captured gen_graph sampling kernels";
+            } else {
+              LOG(WARNING) << "CudaGraph: gen_graph instantiate failed";
+              if (plan.gen_graph_exec) {
+                cudaGraphExecDestroy(plan.gen_graph_exec);
+                plan.gen_graph_exec = nullptr;
+              }
+            }
+          } else {
+            if (!capture_ok || err != cudaSuccess) {
+              LOG(WARNING)
+                  << "CudaGraph: gen_graph capture failed (capture_ok="
+                  << capture_ok << " err=" << cudaGetErrorName(err)
+                  << "), falling back to eager for sampling";
+              // Mark as captured (with null exec) to avoid retrying
+              plan.gen_graph_captured = true;
+            }
+            if (graph) cudaGraphDestroy(graph);
+          }
+        } else {
+          LOG(WARNING) << "CudaGraph: gen_graph beginCapture failed";
+        }
+        used_gen_graph = true;
+      } else if (gen_op && plan.gen_graph_exec) {
+        // Replay: update params, replay graph, run post-process eagerly
+        gen_op->UpdateGraphParams(runtime_ctx_.get());
+        cudaGraphLaunch(plan.gen_graph_exec, stream);
+        gen_op->RunSamplePostProcess(runtime_ctx_.get());
+
+        // Run non-GenerateOp gen_graph ops eagerly (UpdateIdOp, etc.)
+        for (auto& op : graph_ops_["gen_graph"]) {
+          if (!dynamic_cast<GenerateOp*>(op.get())) {
+            AsStatus status = op->CallForward(runtime_ctx_.get());
+            CHECK_CUDA_ERROR(op)
+            if (status != AsStatus::ALLSPARK_SUCCESS) {
+              LOG(ERROR) << "forward failed in loop::gen_graph" << std::endl;
+              return ErrorProcess(status);
+            }
+          }
+        }
+        used_gen_graph = true;
+      }
+    }
+    if (!used_gen_graph)
+#endif  // ENABLE_CUDA
+    {
+      // Eager gen_graph execution
+      for (auto& op : graph_ops_["gen_graph"]) {
+        AsStatus status = op->CallForward(runtime_ctx_.get());
 #if DEBUG_GEN_LAYER_SYNC
-      op->Synchronize();
+        op->Synchronize();
 #endif
 #if DEBUG_GEN_LAYER
-      if (debugCurrentRequest(
-              runtime_ctx_->GetGenCtx(0)->request->request_id)) {
-        op->PrintInformation();
+        if (debugCurrentRequest(
+                runtime_ctx_->GetGenCtx(0)->request->request_id)) {
+          op->PrintInformation();
 #if DEBUG_GEN_LAYER_SAVE_NPY
-        DO_ARBITRATE(rank_, nranks_, gen_ctx_model_->step, op);
+          DO_ARBITRATE(rank_, nranks_, gen_ctx_model_->step, op);
 #endif
-      }
+        }
 #endif
-      CHECK_CUDA_ERROR(op)
-      if (status != AsStatus::ALLSPARK_SUCCESS) {
-        LOG(ERROR) << "forward failed in loop::gen_graph" << std::endl;
-        return ErrorProcess(status);
+        CHECK_CUDA_ERROR(op)
+        if (status != AsStatus::ALLSPARK_SUCCESS) {
+          LOG(ERROR) << "forward failed in loop::gen_graph" << std::endl;
+          return ErrorProcess(status);
+        }
       }
     }
 
@@ -1932,6 +2040,10 @@ void AsModel::CudaGraphClear() {
         cudaGraphExecDestroy(seg.exec);
         seg.exec = nullptr;
       }
+    }
+    if (plan.gen_graph_exec) {
+      cudaGraphExecDestroy(plan.gen_graph_exec);
+      plan.gen_graph_exec = nullptr;
     }
   }
   cuda_graph_plans_.clear();

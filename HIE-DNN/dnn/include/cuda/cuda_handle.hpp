@@ -27,12 +27,23 @@ struct HiednnCudaHandle {
             return HIEDNN_STATUS_INTERNAL_ERROR;
         }
         *ws = static_cast<T *>(deviceWs);
-        CHECK_CUDA_RETURN(cudaStreamWaitEvent(stream, wsMutex, 0));
+        // Skip event-based locking during CUDA graph capture: stream
+        // wait/record on events is not allowed during capture, and
+        // concurrent workspace access cannot occur during capture anyway.
+        cudaStreamCaptureStatus captureStatus = cudaStreamCaptureStatusNone;
+        cudaStreamIsCapturing(stream, &captureStatus);
+        if (captureStatus == cudaStreamCaptureStatusNone) {
+            CHECK_CUDA_RETURN(cudaStreamWaitEvent(stream, wsMutex, 0));
+        }
         return HIEDNN_STATUS_SUCCESS;
     }
 
     hiednnStatus_t DeviceWsUnlock() const {
-        CHECK_CUDA_RETURN(cudaEventRecord(wsMutex, stream));
+        cudaStreamCaptureStatus captureStatus = cudaStreamCaptureStatusNone;
+        cudaStreamIsCapturing(stream, &captureStatus);
+        if (captureStatus == cudaStreamCaptureStatusNone) {
+            CHECK_CUDA_RETURN(cudaEventRecord(wsMutex, stream));
+        }
         return HIEDNN_STATUS_SUCCESS;
     }
 };

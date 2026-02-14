@@ -76,7 +76,7 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
   }
 
   // clear previous error if any
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
 
   // set valBuffer histPtr globalCountPtr
   CompT* valBuffer[2]{static_cast<CompT*>(workSpace),
@@ -130,13 +130,13 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
   countBinEx<1024, 0, 20, PACKSIZE, WITHSCALE, LARGEST>
       <<<dim3(gridSizeX, gridSizeY), 1024, 0, stream>>>(valIn, taskOffsetPtr,
                                                         histPtr, taskNum);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
   // select bin
   selectBin<LARGEST, 1024, (1 << 12)>
       <<<taskNum, 1024, 0, stream>>>(histPtr, binIdPtr, kPtr, taskLenPtr[0]);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
   // select candidate
@@ -147,7 +147,7 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
       <<<dim3(gridSizeX, gridSizeY), 256, 0, stream>>>(
           valIn, valBuffer[0], globalCountPtr, binIdPtr, taskOffsetPtr, stride,
           taskNum);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
   // update taskLen
@@ -169,13 +169,13 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
     // get hist
     countBin<1024, 12, 20><<<dim3(gridSize, taskNum), 1024, 0, stream>>>(
         valBuffer[flag], taskLenPtr[flag], histPtr, stride);
-    AS_CHECK_CUDA_LAST_ERROR();
+    AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
     RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
     // select bin
     selectBin<LARGEST, 1024, (1 << 12)><<<taskNum, 1024, 0, stream>>>(
         histPtr, binIdPtr, kPtr, taskLenPtr[flag ^ 1]);
-    AS_CHECK_CUDA_LAST_ERROR();
+    AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
     RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
     // shift candidate element
@@ -183,7 +183,7 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
     selectCandidate<256, 12, 20><<<dim3(gridSize, taskNum), 256, 0, stream>>>(
         valBuffer[flag], valBuffer[flag ^ 1], globalCountPtr, binIdPtr,
         taskLenPtr[flag], stride);
-    AS_CHECK_CUDA_LAST_ERROR();
+    AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
     RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
     // update taskLen
@@ -207,13 +207,13 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
     // get hist
     countBin<256, 24, 24><<<dim3(gridSize, taskNum), 256, 0, stream>>>(
         valBuffer[flag], taskLenPtr[flag], histPtr + 3840 * taskNum, stride);
-    AS_CHECK_CUDA_LAST_ERROR();
+    AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
     RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
     // select bin
     selectBin<LARGEST, 256, (1 << 8)><<<taskNum, 256, 0, stream>>>(
         histPtr + 3840 * taskNum, binIdPtr, kPtr, taskLenPtr[flag ^ 1]);
-    AS_CHECK_CUDA_LAST_ERROR();
+    AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
     RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
     // shift candidate element
@@ -221,7 +221,7 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
     selectCandidate<256, 24, 24><<<dim3(gridSize, taskNum), 256, 0, stream>>>(
         valBuffer[flag], valBuffer[flag ^ 1], globalCountPtr, binIdPtr,
         taskLenPtr[flag], stride);
-    AS_CHECK_CUDA_LAST_ERROR();
+    AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
     RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
     flag ^= 1;
@@ -260,7 +260,7 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
             taskOffsetPtr, stride, K, taskNum);
   }
 #undef RADIX_TOPK_CALL_FILTER
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
 #define RADIX_TOPK_CALL_BITONIC_SORT(LENGTH, BLOCK)                          \
@@ -289,7 +289,7 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
     uint32_t nPass = (K + 1024 * PACKSIZE - 1) / (1024 * PACKSIZE);
     convertNanInPlace<1024, PACKSIZE, ASCEND>
         <<<dim3(taskNum, nPass), 1024, 0, stream>>>(valOut, K);
-    AS_CHECK_CUDA_LAST_ERROR();
+    AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
 #endif  // CONFIG_RADIX_TOPK_ENFORCE_NAN_ORDER_GT_4096
 #endif  // CONFIG_RADIX_TOPK_ENABLE_NAN_FILTER
     for (int i = 0; i < taskNum; ++i) {
@@ -305,7 +305,7 @@ void topKRadixSelectL(const ValType* valIn, const IdxType* idxIn,
     }
   }
 #undef RADIX_TOPK_CALL_BITONIC_SORT
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   RADIX_TOPK_KERNEL_CHECK_SYNC(stream);
 
   return;

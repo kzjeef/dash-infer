@@ -256,6 +256,10 @@ class AsModel {
     std::vector<CudaGraphSegment> segments;
     // Indices of graph-unsafe ops that must run eagerly
     std::vector<int> eager_op_indices;
+    // Gen graph: captures GenerateOp's GPU-only sampling kernels
+    // (process_logits + TopK/TopP/Sample + logprobs)
+    cudaGraphExec_t gen_graph_exec = nullptr;
+    bool gen_graph_captured = false;
   };
 
   void CudaGraphClear();

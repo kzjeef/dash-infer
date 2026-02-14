@@ -481,6 +481,131 @@ AsStatus GenerateOp::Reshape(RuntimeContext* runtime_ctx) {
   }
   return AsStatus::ALLSPARK_SUCCESS;
 }
+AsStatus GenerateOp::RunSampleGPU(RuntimeContext* runtime_ctx) {
+  AsTensor* in_tensor = tensor_map_->at(in_names_[0]).get();
+  char* in_ptr = (char*)in_tensor->GetDataPtr() +
+                 (seq_len_ - 1) * vocab_size_ * SizeofType(dtype_);
+  void* out_ptr = dec_ids_->GetDataPtr();
+  void* ws_ptr = tensor_map_->at("workspace")->GetDataPtr();
+  size_t ws_bytes = tensor_map_->at("workspace")->GetSizeInByte();
+  void** sample_states = (void**)sample_states_->GetDataPtr();
+
+  void* device_prop_ptr = nullptr;
+#ifdef ENABLE_CUDA
+  if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+    device_prop_ptr = device_prop_ ? device_prop_->GetDataPtr() : nullptr;
+  }
+#endif
+
+  {
+    int batch_size;
+    int64_t* max_dec_ids;
+    char* batch_in_ptr = in_ptr;
+    if (runtime_ctx->is_context) {
+      batch_size = 1;
+      max_dec_ids = static_cast<int64_t*>(max_dec_ids_->GetDataPtr()) +
+                    runtime_ctx->current_batch * ctx_->GetModelMaxLength();
+    } else {
+      batch_size = batch_size_;
+      max_dec_ids = static_cast<int64_t*>(max_dec_ids_->GetDataPtr());
+    }
+
+    process_logits_launcher(dtype_, max_dec_ids, batch_in_ptr, batch_size,
+                            vocab_size_, ctx_, runtime_ctx, batch_gencfg_,
+                            ws_ptr, ws_bytes);
+  }
+
+  // Stream ordering guarantees process_logits completes before sampling.
+  // No sync needed — all kernels share the same CUDA stream.
+  kernel_launcher(dtype_, static_cast<int64_t*>(out_ptr), topk_value_ptr_,
+                  topp_value_ptr_, static_cast<int*>(topk_indice_ptr_), in_ptr,
+                  sample_states, batch_size_, max_k_, vocab_size_,
+                  static_cast<int*>(topk_list_->GetDataPtr()),
+                  static_cast<float*>(topp_list_->GetDataPtr()),
+                  static_cast<float*>(temperature_list_->GetDataPtr()), ctx_,
+                  runtime_ctx, ws_ptr, ws_bytes, device_prop_ptr);
+
+  if (need_logprobs_) {
+    logprobs_launcher(dtype_, in_ptr, static_cast<int64_t*>(out_ptr),
+                      token_logprobs_->GetDataPtr(), logprobs_->GetDataPtr(),
+                      topk_value_ptr_, static_cast<int*>(topk_indice_ptr_),
+                      batch_size_, vocab_size_, runtime_ctx, ws_ptr, ws_bytes,
+                      ctx_);
+  }
+
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+AsStatus GenerateOp::RunSamplePostProcess(RuntimeContext* runtime_ctx) {
+  const DeviceType device = ctx_->GetDeviceType();
+
+#ifdef ENABLE_CUDA
+  if (device == DeviceType::CUDA) {
+    const CUDAContext* cuda_ctx = static_cast<const CUDAContext*>(ctx_);
+    if (cuda_ctx->GetNranks() > 1) {
+      AsStatus status = NcclBcast(dec_ids_, cuda_ctx);
+      if (status != AsStatus::ALLSPARK_SUCCESS) {
+        LOG(ERROR) << "forward failed in sampling " << std::endl;
+        return status;
+      }
+    }
+
+    fill_generated_ids_gpu(runtime_ctx, dec_ids_, gen_ids_ptr_, dec_ids_host_,
+                           cuda_ctx, rank_id_);
+  }
+#endif
+
+  if (device == DeviceType::CPU) {
+    if (nrank_ > 1) {
+#ifdef ENABLE_MULTINUMA
+      AsStatus status = MpiBcast(dec_ids_);
+      if (status != AsStatus::ALLSPARK_SUCCESS) {
+        LOG(ERROR) << "forward failed in sampling " << std::endl;
+        return status;
+      }
+#else
+      LOG(ERROR) << "Multi-NUMA codes are not compiled" << std::endl;
+      return AsStatus::ALLSPARK_RUNTIME_ERROR;
+#endif
+    }
+
+    fill_generated_ids_cpu(runtime_ctx, dec_ids_, rank_id_);
+  }
+  int batch_stride = ctx_->GetMaxTopLogprobs();
+  int batch_size = runtime_ctx->GetGenCtxListSize();
+  if (rank_id_ == 0) {
+    if (runtime_ctx->is_context) {
+      UpdateProbs(runtime_ctx->GetContextGenCtx(), runtime_ctx, 0,
+                  batch_stride);
+    } else {
+      for (int i = 0; i < batch_size; i++) {
+        GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(i);
+        UpdateProbs(gen_ctx, runtime_ctx, i, batch_stride);
+      }
+    }
+  }
+
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+AsStatus GenerateOp::UpdateGraphParams(RuntimeContext* runtime_ctx) {
+#ifdef ENABLE_CUDA
+  if (ctx_->GetDeviceType() != DeviceType::CUDA || runtime_ctx->is_context) {
+    return AsStatus::ALLSPARK_SUCCESS;
+  }
+
+  // Refresh batch_gencfg: cur_len changes per step (from gen_ctx->step).
+  build_batch_gencfg(runtime_ctx, batch_gencfg_, ctx_);
+
+  // Refresh max_dec_ids: copy latest generated tokens for repetition penalty.
+  fill_max_dec_ids_launcher(runtime_ctx, max_dec_ids_, ctx_);
+
+  // Sample states pointers are stable within a batch — no update needed.
+  // (sample_state->GetDataPtr() doesn't change between decode steps.)
+#endif
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
 AsStatus GenerateOp::RunSample(RuntimeContext* runtime_ctx) {
   const DeviceType device = ctx_->GetDeviceType();
   AsTensor* in_tensor = tensor_map_->at(in_names_[0]).get();
@@ -597,8 +722,8 @@ AsStatus GenerateOp::RunSample(RuntimeContext* runtime_ctx) {
   }
 #endif  // ENABLE_JSON_MODE
 
-  // don't remove this sync, otherwise wrong token will generate.
-  ctx_->Synchronize();
+  // Stream ordering guarantees process_logits completes before sampling.
+  // No sync needed — all kernels share the same CUDA stream.
   kernel_launcher(dtype_, static_cast<int64_t*>(out_ptr), topk_value_ptr_,
                   topp_value_ptr_, static_cast<int*>(topk_indice_ptr_), in_ptr,
                   sample_states, batch_size_, max_k_, vocab_size_,
@@ -615,51 +740,7 @@ AsStatus GenerateOp::RunSample(RuntimeContext* runtime_ctx) {
                       ctx_);
   }
 
-#ifdef ENABLE_CUDA
-  if (device == DeviceType::CUDA) {
-    const CUDAContext* cuda_ctx = static_cast<const CUDAContext*>(ctx_);
-    if (cuda_ctx->GetNranks() > 1) {
-      AsStatus status = NcclBcast(dec_ids_, cuda_ctx);
-      if (status != AsStatus::ALLSPARK_SUCCESS) {
-        LOG(ERROR) << "forward failed in sampling " << std::endl;
-        return status;
-      }
-    }
-
-    fill_generated_ids_gpu(runtime_ctx, dec_ids_, gen_ids_ptr_, dec_ids_host_,
-                           cuda_ctx, rank_id_);
-  }
-#endif
-
-  if (device == DeviceType::CPU) {
-    if (nrank_ > 1) {
-#ifdef ENABLE_MULTINUMA
-      AsStatus status = MpiBcast(dec_ids_);
-      if (status != AsStatus::ALLSPARK_SUCCESS) {
-        LOG(ERROR) << "forward failed in sampling " << std::endl;
-        return status;
-      }
-#else
-      LOG(ERROR) << "Multi-NUMA codes are not compiled" << std::endl;
-      return AsStatus::ALLSPARK_RUNTIME_ERROR;
-#endif
-    }
-
-    fill_generated_ids_cpu(runtime_ctx, dec_ids_, rank_id_);
-  }
-  int batch_stride = ctx_->GetMaxTopLogprobs();
-  int batch_size = runtime_ctx->GetGenCtxListSize();
-  if (rank_id_ == 0) {
-    if (runtime_ctx->is_context) {
-      UpdateProbs(runtime_ctx->GetContextGenCtx(), runtime_ctx, 0,
-                  batch_stride);
-    } else {
-      for (int i = 0; i < batch_size; i++) {
-        GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(i);
-        UpdateProbs(gen_ctx, runtime_ctx, i, batch_stride);
-      }
-    }
-  }
+  AS_CHECK_STATUS(RunSamplePostProcess(runtime_ctx));
 
   return AsStatus::ALLSPARK_SUCCESS;
 }

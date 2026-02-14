@@ -82,7 +82,7 @@ void LaunchGenIndices(IdxT* output, int* dOffsets, const int taskLen,
   uint32_t nBlocks = UIntDivUp<uint32_t>(taskLen, BLOCK * UNROLL);
   impl::genIndicesKernel<BLOCK, UNROLL>
       <<<dim3(nBlocks, taskNum), BLOCK, 0, stream>>>(output, dOffsets, taskLen);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   return;
 }
 
@@ -146,7 +146,7 @@ void CubSortLogits(ValT* valOut, IdxT* idxOut, const ValT* valIn,
         cubWsPtr, vWsSizeInBytes, valIn, valOut, idxIn, idxOut, itemNum,
         taskNum, dOffsets, dOffsets + 1, 0, sizeof(ValT) * 8, stream));
   }
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   return;
 }
 
@@ -170,7 +170,7 @@ void HiednnPrefixSum(T* output, const T* input, const int taskLen,
   AS_CHECK_HIEDNN(hiednnCudaPrefixSum(handle, dataDesc, input, AXIS, EXCLUSIVE,
                                       REVERSE, dataDesc, output));
   AS_CHECK_HIEDNN(hiednnDestroyTensorDesc(dataDesc));
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   return;
 }
 

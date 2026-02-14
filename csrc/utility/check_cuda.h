@@ -46,6 +46,24 @@
     }                                                                \
   } while (0)
 
+// Graph-capture-safe version: ignores CUDA stream capture errors since
+// cudaGetLastError() returns capture-related status codes during graph
+// capture mode. Non-capture errors are still checked and thrown.
+#define AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE()                        \
+  do {                                                               \
+    cudaError_t err = cudaGetLastError();                            \
+    if (err != cudaSuccess &&                                        \
+        err != cudaErrorStreamCaptureInvalidated &&                  \
+        err != cudaErrorStreamCaptureUnsupported &&                  \
+        err != cudaErrorStreamCaptureIsolation) {                    \
+      std::string err_str = cudaGetErrorString(err);                 \
+      LOG(ERROR) << "Failed: " << __FILE__ << ":" << __LINE__ << " " \
+                 << err_str;                                         \
+      print_backtrace();                                             \
+      throw AsException("[Cuda error]" + err_str);                   \
+    }                                                                \
+  } while (0)
+
 #define AS_CHECK_CUBLAS(cmd)                                           \
   do {                                                                 \
     cublasStatus_t cublas_status = cmd;                                \

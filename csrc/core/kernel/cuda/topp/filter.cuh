@@ -88,7 +88,7 @@ void LaunchCutoff(IdxT* numToKeep, const T* valPtr, const float* cutoffs,
       <<<nBlocks, dim3(WARP_SIZE, BLOCK_Y), 0, stream>>>(
           valPtr, cutoffs, taskLenPtr, numToKeep, taskNum, stride, MIN_NUM_KEEP,
           0.f, 1.f);
-  AS_CHECK_CUDA_LAST_ERROR();
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
   return;
 }
 

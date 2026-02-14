@@ -20,6 +20,16 @@ class GenerateOp : public AsOperator {
   AsStatus RunOneBatch(GenerateContext* gen_ctx, int current_batch);
   AsStatus RunSample(RuntimeContext* runtime_ctx);
 
+  // GPU-only sampling: process_logits + TopK/TopP/Sample + logprobs.
+  // No sync, no D2H, no NCCL. Suitable for CUDA graph capture.
+  AsStatus RunSampleGPU(RuntimeContext* runtime_ctx);
+
+  // Post-processing after GPU sampling: NCCL bcast + D2H + CPU scatter.
+  AsStatus RunSamplePostProcess(RuntimeContext* runtime_ctx);
+
+  // CUDA Graph support: update step-dependent buffers before graph replay.
+  AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) override;
+
  private:
   BatchGencfg batch_gencfg_;
   int rank_id_ = 0;
