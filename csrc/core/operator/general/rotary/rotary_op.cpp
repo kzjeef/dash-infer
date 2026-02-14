@@ -285,6 +285,28 @@ AsStatus RotaryOp::RunRotary(int run_batch_size, AsTensor* rotary_step,
   int* positions =
       use_positions ? (int*)mrope_position_->GetDataPtr() : nullptr;
   int* mrope_section = (int*)mrope_section_->GetDataPtr();
+
+#ifdef ENABLE_CUDA
+  // For RotaryType::base on CUDA without mrope, use fused QKV kernel
+  if (rotary_type_ == RotaryType::base && !use_positions &&
+      ctx_->GetDeviceType() == DeviceType::CUDA &&
+      (hidden_size_ * SizeofType(dtype_)) % 16 == 0) {
+    const CUDAContext* gpu_ctx = static_cast<const CUDAContext*>(ctx_);
+    cudaStream_t cu_stream = gpu_ctx->GetStream();
+    auto functor = [&]<typename T>() {
+      cuda::RotaryOptEmbeddingQKV<T>(
+          (T*)outq_buf, (const T*)q_buf, num_heads_,
+          (T*)outk_buf, (const T*)k_buf, group_num_,
+          (T*)outv_buf, (const T*)v_buf, group_num_,
+          inv_freq, batch_offset, run_batch_size, seq_len_,
+          size_per_head_, run_step, qkv_stride, xlogn_, cu_stream);
+    };
+    DispatchCUDA(dtype_, functor);
+    return AsStatus::ALLSPARK_SUCCESS;
+  }
+#endif
+
+  // Fallback: 3 separate launches (mrope, CPU, or non-base rotary types)
   rotary_launcher(dtype_, outq_buf, q_buf, inv_freq, batch_offset,
                   run_batch_size, seq_len_, run_step, hidden_size_, num_heads_,
                   size_per_head_, 0, qkv_stride, rotary_type_, rotary_pct_,
