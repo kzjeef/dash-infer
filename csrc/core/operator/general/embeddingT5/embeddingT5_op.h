@@ -18,6 +18,7 @@ class EmbeddingT5Op : public AsOperator {
                 const TensorMap& weights_map, TensorMap* tensor_map);
   AsStatus Reshape(RuntimeContext* runtime_ctx) override;
   AsStatus Forward(RuntimeContext* runtime_ctx) override;
+  bool IsGraphUnsafe() const override { return true; }
 
  private:
   int hidden_size_;

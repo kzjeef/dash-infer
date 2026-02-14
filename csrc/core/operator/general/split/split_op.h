@@ -17,6 +17,7 @@ class SplitOp : public AsOperator {
                 const TensorMap& weights_map, TensorMap* tensor_map);
   AsStatus Reshape() override;
   AsStatus Forward() override;
+  bool IsGraphUnsafe() const override { return true; }
 
  private:
   SplitMode split_type_ = NOSPLIT;

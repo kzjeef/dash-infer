@@ -20,6 +20,7 @@ class RichEmbeddingOp : public AsOperator {
                 const TensorMap& weights_map, TensorMap* tensor_map);
   AsStatus Reshape(RuntimeContext* runtime_ctx) override;
   AsStatus Forward(RuntimeContext* runtime_ctx) override;
+  bool IsGraphUnsafe() const override { return true; }
   AsStatus RunContext(RuntimeContext* runtime_ctx);
   AsStatus RunDecoder(RuntimeContext* runtime_ctx);
   void UpdateInputsEmbedding(RuntimeContext* runtime_ctx, AsTensor* out_tensor);
