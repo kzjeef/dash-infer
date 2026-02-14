@@ -21,6 +21,7 @@
 
 #ifdef ENABLE_CUDA
 #include <check_cuda.h>
+#include <cuda_runtime.h>
 #endif
 
 #include <memory>
@@ -240,6 +241,18 @@ class AsModel {
   PrefixCacheManager::Ptr prefix_cache_manager_;
   PrefixCacheCoordinator::Ptr prefix_cache_coordinator_;
   int tokens_per_cache_span_ = 0;
+#endif
+
+#ifdef ENABLE_CUDA
+  // CUDA Graph support for decode phase
+  void CudaGraphClear();
+  bool CudaGraphTryReplay(int batch_size);
+  AsStatus CudaGraphCapture(int batch_size);
+  static int CudaGraphBatchBucket(int batch_size);
+
+  bool cuda_graph_enabled_ = false;
+  // Map from batch-size bucket → captured graph executable
+  std::unordered_map<int, cudaGraphExec_t> cuda_graph_cache_;
 #endif
 
  private:
