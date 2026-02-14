@@ -1341,14 +1341,33 @@ AsStatus AsModel::GenerateContinueDecoder() {
     {
       TracerLog trace(ctx_->GetDeviceType(), "DecoderForward", 1);
 #ifdef ENABLE_CUDA
-      // Try CUDA graph replay for the decoder forward pass.
-      // On the first decode step for a given batch bucket, we run eagerly
-      // and then capture the graph. Subsequent steps replay the graph.
+      // CUDA Graph decode optimization.
+      //
+      // Key insight: Operators like RotaryOp use LayerCacheManager to cache
+      // step-dependent data (rotary_step, rotary_inv_freq). The first
+      // operator that runs checks IsCacheSet() and populates the cache.
+      // Subsequent operators (same layer type in later layers) find the
+      // cache already set and skip the H2D copy.
+      //
+      // For graph capture: we run one eager Forward pass first. This
+      // populates all LayerCache entries and launches all kernels. Then we
+      // capture a SECOND Forward pass. In this capture pass, the LayerCache
+      // is already set, so the H2D copies are SKIPPED (CPU-side check),
+      // and only the compute kernels are recorded into the graph.
+      //
+      // For graph replay: before launching, we reset the LayerCache and
+      // re-populate it with current step data (outside the graph). Then
+      // the graph replays only the compute kernels, reading from the
+      // updated GPU buffers at stable addresses.
       bool graph_replayed = false;
       if (cuda_graph_enabled_) {
-        graph_replayed = CudaGraphTryReplay(batch_size);
-        if (!graph_replayed) {
-          // First step at this batch size — run eagerly, then capture
+        int bucket = CudaGraphBatchBucket(batch_size);
+        bool has_graph = cuda_graph_cache_.count(bucket) &&
+                         cuda_graph_cache_[bucket] != nullptr;
+
+        if (!has_graph) {
+          // Step 1: Run eagerly to populate all step-dependent GPU buffers
+          // (rotary_step, rotary_inv_freq, attention span pointers, etc.)
           for (auto& op : graph_ops_["decoder"]) {
             AsStatus status = op->CallForward(runtime_ctx_.get());
             CHECK_CUDA_ERROR(op)
@@ -1357,16 +1376,33 @@ AsStatus AsModel::GenerateContinueDecoder() {
               return ErrorProcess(status);
             }
           }
-          // Capture the graph for future replays
+          // Step 2: Capture. LayerCache is already set from step 1, so the
+          // H2D copies inside RotaryOp/AttentionOp will be skipped (they
+          // check IsCacheSet). Only compute kernels are recorded.
           auto cap_status = CudaGraphCapture(batch_size);
           if (cap_status != AsStatus::ALLSPARK_SUCCESS) {
-            LOG(WARNING) << "CudaGraph: capture failed, will continue "
-                            "without graph for bucket "
-                         << CudaGraphBatchBucket(batch_size);
+            LOG(WARNING) << "CudaGraph: capture failed for bucket " << bucket;
           }
+          graph_replayed = true;  // we already ran eagerly above
+        } else {
+          // Graph exists — update step-dependent buffers, then replay.
+          // Run each op's Forward() eagerly to update GPU buffers with
+          // current step data. The LayerCache was reset at the top of the
+          // decode loop, so the first RotaryOp will re-populate it.
+          for (auto& op : graph_ops_["decoder"]) {
+            op->CallForward(runtime_ctx_.get());
+          }
+          // Now replay the graph. The graph kernels read from the same
+          // GPU buffer addresses that were just updated by the eager pass.
+          // The graph results overwrite the eager results (identical compute).
+          graph_replayed = CudaGraphTryReplay(batch_size);
+          // TODO: The eager pass above is redundant (launches kernels that
+          // are overwritten by graph replay). To eliminate this overhead,
+          // split Forward() into updateBuffers() + launchKernels() so only
+          // the buffer updates run before graph launch.
         }
       }
-      if (!cuda_graph_enabled_ || (!graph_replayed && false))
+      if (!cuda_graph_enabled_ || !graph_replayed)
 #endif  // ENABLE_CUDA
       {
         // Eager execution (no CUDA graph)
