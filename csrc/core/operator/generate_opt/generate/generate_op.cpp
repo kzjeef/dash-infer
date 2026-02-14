@@ -565,46 +565,28 @@ AsStatus GenerateOp::RunSample(RuntimeContext* runtime_ctx) {
   do_format = rank_id_ == 0;
 #endif
   if (do_format == true) {
-    bool need_json_format = false;
     if (runtime_ctx->is_context) {
       GenerateContext* gen_ctx = runtime_ctx->GetContextGenCtx();
-      need_json_format = gen_ctx->gen_cfg.response_format.count("type") &&
-                         gen_ctx->gen_cfg.response_format["type"] ==
-                             "json_object";
+      if (gen_ctx->gen_cfg.response_format.count("type") &&
+          gen_ctx->gen_cfg.response_format["type"] == "json_object") {
+        AS_CHECK_STATUS(
+            FormatModelOutput(gen_ctx, in_ptr, 0, runtime_ctx->is_context));
+      }
     } else {
       for (int i = 0; i < batch_size_; i++) {
         GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(i);
         if (gen_ctx->gen_cfg.response_format.count("type") &&
             gen_ctx->gen_cfg.response_format["type"] == "json_object") {
-          need_json_format = true;
-          break;
-        }
-      }
-    }
-    if (need_json_format) {
-      // FormatModelOutput reads GPU logits on CPU — must sync first
-      ctx_->Synchronize();
-      if (runtime_ctx->is_context) {
-        GenerateContext* gen_ctx = runtime_ctx->GetContextGenCtx();
-        AS_CHECK_STATUS(
-            FormatModelOutput(gen_ctx, in_ptr, 0, runtime_ctx->is_context));
-      } else {
-        for (int i = 0; i < batch_size_; i++) {
-          GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(i);
-          if (gen_ctx->gen_cfg.response_format.count("type") &&
-              gen_ctx->gen_cfg.response_format["type"] == "json_object") {
-            AS_CHECK_STATUS(
-                FormatModelOutput(gen_ctx, in_ptr, i, runtime_ctx->is_context));
-          }
+          AS_CHECK_STATUS(
+              FormatModelOutput(gen_ctx, in_ptr, i, runtime_ctx->is_context));
         }
       }
     }
   }
 #endif  // ENABLE_JSON_MODE
 
-  // No sync needed here: LogitsProcessor and sampling kernels are on the
-  // same CUDA stream, so stream ordering guarantees correctness.
-  // (Sync only happens above when JSON format enforcement is active.)
+  // don't remove this sync, otherwise wrong token will generate.
+  ctx_->Synchronize();
   kernel_launcher(dtype_, static_cast<int64_t*>(out_ptr), topk_value_ptr_,
                   topp_value_ptr_, static_cast<int*>(topk_indice_ptr_), in_ptr,
                   sample_states, batch_size_, max_k_, vocab_size_,
