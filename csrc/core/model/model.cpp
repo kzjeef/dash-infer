@@ -1867,6 +1867,130 @@ ModelFactory& ModelFactory::getInstance() {
   return model_factory;
 }
 
+// ---------------------------------------------------------------------------
+// CUDA Graph support for decode phase
+// ---------------------------------------------------------------------------
+#ifdef ENABLE_CUDA
+
+int AsModel::CudaGraphBatchBucket(int batch_size) {
+  // Round up to nearest power of 2
+  int b = 1;
+  while (b < batch_size) b <<= 1;
+  return b;
+}
+
+void AsModel::CudaGraphClear() {
+  for (auto& [bucket, exec] : cuda_graph_cache_) {
+    if (exec) {
+      cudaGraphExecDestroy(exec);
+    }
+  }
+  cuda_graph_cache_.clear();
+  DLOG(INFO) << "CudaGraph: cleared all cached graphs";
+}
+
+bool AsModel::CudaGraphTryReplay(int batch_size) {
+  if (!cuda_graph_enabled_) return false;
+
+  int bucket = CudaGraphBatchBucket(batch_size);
+  auto it = cuda_graph_cache_.find(bucket);
+  if (it == cuda_graph_cache_.end() || it->second == nullptr) {
+    return false;
+  }
+
+  auto cuda_ctx = dynamic_cast<const CUDAContext*>(ctx_);
+  if (!cuda_ctx) return false;
+
+  cudaError_t err = cudaGraphLaunch(it->second, cuda_ctx->GetStream());
+  if (err != cudaSuccess) {
+    LOG(WARNING) << "CudaGraph: replay failed for bucket " << bucket
+                 << ": " << cudaGetErrorString(err);
+    return false;
+  }
+
+  DLOG(INFO) << "CudaGraph: replayed graph for bucket " << bucket
+             << " (actual batch=" << batch_size << ")";
+  return true;
+}
+
+AsStatus AsModel::CudaGraphCapture(int batch_size) {
+  int bucket = CudaGraphBatchBucket(batch_size);
+
+  // Already captured for this bucket
+  if (cuda_graph_cache_.count(bucket) && cuda_graph_cache_[bucket] != nullptr) {
+    return AsStatus::ALLSPARK_SUCCESS;
+  }
+
+  auto cuda_ctx = dynamic_cast<const CUDAContext*>(ctx_);
+  if (!cuda_ctx) {
+    return AsStatus::ALLSPARK_RUNTIME_ERROR;
+  }
+
+  cudaStream_t stream = cuda_ctx->GetStream();
+
+  LOG(INFO) << "CudaGraph: capturing decoder forward for batch bucket "
+            << bucket << " (actual batch=" << batch_size << ")";
+
+  // Begin capture
+  cudaError_t err =
+      cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed);
+  if (err != cudaSuccess) {
+    LOG(ERROR) << "CudaGraph: beginCapture failed: "
+               << cudaGetErrorString(err);
+    return AsStatus::ALLSPARK_RUNTIME_ERROR;
+  }
+
+  // Run decoder forward — kernels are recorded, not executed
+  for (auto& op : graph_ops_["decoder"]) {
+    AsStatus status = op->CallForward(runtime_ctx_.get());
+    if (status != AsStatus::ALLSPARK_SUCCESS) {
+      // Abort capture on error
+      cudaGraph_t discard;
+      cudaStreamEndCapture(stream, &discard);
+      if (discard) cudaGraphDestroy(discard);
+      LOG(ERROR) << "CudaGraph: forward failed during capture";
+      return status;
+    }
+  }
+
+  // End capture
+  cudaGraph_t graph = nullptr;
+  err = cudaStreamEndCapture(stream, &graph);
+  if (err != cudaSuccess || graph == nullptr) {
+    LOG(ERROR) << "CudaGraph: endCapture failed: "
+               << cudaGetErrorString(err);
+    if (graph) cudaGraphDestroy(graph);
+    return AsStatus::ALLSPARK_RUNTIME_ERROR;
+  }
+
+  // Instantiate executable graph
+  cudaGraphExec_t exec = nullptr;
+  err = cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
+  cudaGraphDestroy(graph);  // graph template no longer needed
+
+  if (err != cudaSuccess || exec == nullptr) {
+    LOG(ERROR) << "CudaGraph: instantiate failed: "
+               << cudaGetErrorString(err);
+    if (exec) cudaGraphExecDestroy(exec);
+    return AsStatus::ALLSPARK_RUNTIME_ERROR;
+  }
+
+  size_t num_nodes = 0;
+  cudaGraphExecGetGraph(exec, &graph);
+  if (graph) {
+    cudaGraphGetNodes(graph, nullptr, &num_nodes);
+    cudaGraphDestroy(graph);
+  }
+
+  cuda_graph_cache_[bucket] = exec;
+  LOG(INFO) << "CudaGraph: captured graph for bucket " << bucket
+            << " with " << num_nodes << " nodes";
+
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+#endif  // ENABLE_CUDA
+
 ModelConstructor ModelFactory::GetModel(const std::string& model_type_str) {
   if (model_set_.find(model_type_str) == model_set_.end()) {
     LOG(ERROR) << "Unsupported model type : " << model_type_str << std::endl;
