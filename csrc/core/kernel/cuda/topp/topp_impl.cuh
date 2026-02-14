@@ -151,27 +151,27 @@ void CubSortLogits(ValT* valOut, IdxT* idxOut, const ValT* valIn,
 }
 
 // ------------------------------------
-// Prefix sum
+// Prefix sum (CUB-based, CUDA graph capture safe)
 // ------------------------------------
 template <typename T>
-void HiednnPrefixSum(T* output, const T* input, const int taskLen,
-                     const int taskNum, hiednnCudaHandle_t handle,
-                     cudaStream_t stream) {
-  constexpr hiednnDataType_t dataType = impl::GetHiednnDatatype<T>::type;
+void GetCubScanWorkspaceSize(size_t* wsInBytes, int length) {
+  *wsInBytes = 0;
+  AS_CHECK_CUDA(cub::DeviceScan::InclusiveSum(
+      nullptr, *wsInBytes, static_cast<T*>(nullptr),
+      static_cast<T*>(nullptr), length));
+}
 
-  const int64_t dims[2]{taskNum, taskLen};
-  hiednnTensorDesc_t dataDesc;
-  AS_CHECK_HIEDNN(hiednnCreateTensorDesc(&dataDesc));
-  AS_CHECK_HIEDNN(hiednnSetNormalTensorDesc(dataDesc, dataType, 2, dims));
-
-  constexpr int AXIS = 1;
-  constexpr int EXCLUSIVE = 0;
-  constexpr int REVERSE = 0;
-  AS_CHECK_HIEDNN(hiednnCudaPrefixSum(handle, dataDesc, input, AXIS, EXCLUSIVE,
-                                      REVERSE, dataDesc, output));
-  AS_CHECK_HIEDNN(hiednnDestroyTensorDesc(dataDesc));
-  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
-  return;
+template <typename T>
+void CubBatchedInclusiveSum(T* output, const T* input, const int taskLen,
+                            const int taskNum, void* workspace,
+                            size_t wsSizeInBytes, cudaStream_t stream) {
+  for (int i = 0; i < taskNum; i++) {
+    const T* row_in = input + static_cast<int64_t>(i) * taskLen;
+    T* row_out = output + static_cast<int64_t>(i) * taskLen;
+    size_t temp_bytes = wsSizeInBytes;
+    AS_CHECK_CUDA(cub::DeviceScan::InclusiveSum(
+        workspace, temp_bytes, row_in, row_out, taskLen, stream));
+  }
 }
 
 }  // namespace topp

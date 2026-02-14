@@ -38,7 +38,11 @@ void TopPSoftmaxGetWorkspaceSize(size_t* sizeInBytes, int batch_size,
   size_t softmaxWsBytes(0);
   StridedSoftmaxGetWorkspaceSize<T>(&softmaxWsBytes, batch_size, length);
 
-  *sizeInBytes = std::max(sortWsBytes, softmaxWsBytes);
+  // CUB inclusive scan (prefix sum) workspace
+  size_t scanWsBytes(0);
+  topp::GetCubScanWorkspaceSize<T>(&scanWsBytes, length);
+
+  *sizeInBytes = std::max({sortWsBytes, softmaxWsBytes, scanWsBytes});
   return;
 }
 
@@ -119,9 +123,10 @@ void TopPSoftmaxLauncher(int* topp_count, T* topp_probs, int* topp_indices,
                          length, stream);
   CUDA_KERNEL_TOPP_DBG_SYNC(stream);
 
-  //! NOTE: rely on in-place prefix sum
-  topp::HiednnPrefixSum(sortedAllProbBuf, sortedAllProbBuf, length, batch_size,
-                        handle, stream);
+  //! NOTE: rely on in-place prefix sum (CUB-based, graph-capture safe)
+  topp::CubBatchedInclusiveSum(sortedAllProbBuf, sortedAllProbBuf, length,
+                               batch_size, workspace, ws_size_in_bytes,
+                               stream);
   CUDA_KERNEL_TOPP_DBG_SYNC(stream);
 
   // determine top-p values for each task
