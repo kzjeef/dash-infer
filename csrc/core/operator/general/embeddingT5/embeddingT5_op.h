@@ -19,6 +19,9 @@ class EmbeddingT5Op : public AsOperator {
   AsStatus Reshape(RuntimeContext* runtime_ctx) override;
   AsStatus Forward(RuntimeContext* runtime_ctx) override;
   AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) override;
+  // EmbeddingT5Op uses stack-allocated host buffer for H2D in Forward().
+  // The captured H2D replays with stale stack address. Must run eagerly.
+  bool IsGraphUnsafe() const override { return true; }
 
  private:
   int hidden_size_;
