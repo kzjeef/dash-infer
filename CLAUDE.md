@@ -30,7 +30,9 @@ This runs Conan dependency install (first time or when `AS_FORCE_CONAN=ON`), the
 - `ENABLE_SPAN_ATTENTION`: ON/OFF (default: ON for CUDA)
 
 ### Dependencies
-Managed by Conan (conanfile in `conan/`): protobuf, gtest, glog, pybind11, zlib. Requires `conan` on PATH.
+Managed by Conan 2 (`conan/conanfile.py`): protobuf/3.18.3, gtest/1.11.0, glog/0.5.0, pybind11/2.13.6, zlib/1.2.13. Requires `conan` (v2.x) on PATH. Conan profiles are in `conan/conanprofile.x86_64` and `conan/conanprofile_armclang.aarch64`. Options `arm=True` and `enable_multinuma=True` add platform-specific deps (libunwind, openmpi, grpc).
+
+Both `build.sh` and `setup.py` use Conan 2 workflow: `conan install ... -of . --build=missing` generates `conan_toolchain.cmake` and `conanbuild.sh`, then cmake is invoked with `-DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake`.
 
 ## Testing
 
