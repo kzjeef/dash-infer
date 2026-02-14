@@ -17,7 +17,9 @@ endif()
 if (CONFIG_ACCELERATOR_TYPE STREQUAL "NONE")
     add_definitions(-DUSE_MPI_SERVICE)
 endif()
-set(CMAKE_BUILD_TYPE Debug)
+# Note: Do NOT override CMAKE_BUILD_TYPE here; it is set by the top-level
+# CMakeLists.txt or by the user via -DCMAKE_BUILD_TYPE. Forcing Debug here
+# breaks Conan 2 generator expressions which are config-specific.
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0")
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_BINARY_DIR})
 find_package(pybind11 REQUIRED)
