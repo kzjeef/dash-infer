@@ -364,6 +364,42 @@ AsStatus RotaryOp::RunContext(RuntimeContext* runtime_ctx) {
 
   return AsStatus::ALLSPARK_SUCCESS;
 }
+AsStatus RotaryOp::UpdateGraphParams(RuntimeContext* runtime_ctx) {
+  if (runtime_ctx->is_context) return AsStatus::ALLSPARK_SUCCESS;
+  // Force-populate LayerCache with current step data for CUDA graph replay.
+  // This must be called BEFORE graph launch so the graph's compute kernels
+  // read fresh RoPE positions from the cached GPU tensors.
+  std::shared_ptr<LayerCacheManager> layer_cache_manager =
+      runtime_ctx->GetLayerCacheManager();
+  AsTensor* rotary_step = layer_cache_manager->GetCache("rotary_step");
+  AsTensor* rotary_inv_freq = layer_cache_manager->GetCache("rotary_inv_freq");
+  // Always update (ignore IsCacheSet — we need fresh data for graph replay)
+  layer_cache_manager->SetCache("rotary_step");
+  layer_cache_manager->SetCache("rotary_inv_freq");
+  int freq_size = size_per_head_ / 2;
+  int batch_size = runtime_ctx->GetGenCtxListSize();
+  std::vector<float> inv_freq_tmp(batch_size * freq_size);
+  std::vector<int> run_step_tmp(batch_size);
+  for (int batch = 0; batch < batch_size; batch++) {
+    GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(batch);
+    std::vector<float> inv_freq_one =
+        calculate_invfreq(base_, gen_ctx->step, invfreq_type_);
+    for (int j = 0; j < freq_size; j++) {
+      inv_freq_tmp[batch * freq_size + j] = inv_freq_one[j];
+    }
+    run_step_tmp[batch] =
+        gen_ctx->real_input_len + (gen_ctx->step - gen_ctx->input_len);
+  }
+  rotary_inv_freq->SetShape(Shape{batch_size * freq_size});
+  rotary_inv_freq->CopyDataFrom(inv_freq_tmp.data(),
+                                sizeof(float) * batch_size * freq_size,
+                                DeviceType::CPU, ctx_);
+  rotary_step->SetShape(Shape{batch_size});
+  rotary_step->CopyDataFrom(run_step_tmp.data(), sizeof(int) * batch_size,
+                            DeviceType::CPU, ctx_);
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
 AsStatus RotaryOp::RunDecoder(RuntimeContext* runtime_ctx) {
   std::shared_ptr<LayerCacheManager> layer_cache_manager =
       runtime_ctx->GetLayerCacheManager();
