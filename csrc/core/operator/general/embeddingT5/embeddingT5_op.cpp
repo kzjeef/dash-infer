@@ -117,6 +117,32 @@ AsStatus EmbeddingT5Op::Reshape(RuntimeContext* runtime_ctx) {
       tensor_map_->at(out_names_[0])->SetShape(std::move(out_shape)));
   return AsStatus::ALLSPARK_SUCCESS;
 }
+AsStatus EmbeddingT5Op::UpdateGraphParams(RuntimeContext* runtime_ctx) {
+  if (runtime_ctx->is_context) return AsStatus::ALLSPARK_SUCCESS;
+#ifdef ENABLE_CUDA
+  if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+    // Copy latest generated token IDs to in_ids_ device tensor before graph
+    // replay. The graph's captured H2D copies from in_ids_->GetDataPtr()
+    // (stable address) and the embedding kernel reads from there.
+    std::vector<int64_t> new_tokens(batch_size_);
+    for (int i = 0; i < batch_size_; i++) {
+      GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(i);
+      std::shared_ptr<AsTensor> generated_ids_tensor =
+          gen_ctx->request->interim.at("generated_ids");
+      new_tokens[i] =
+          *(static_cast<int64_t*>(generated_ids_tensor->GetDataPtr()) +
+            generated_ids_tensor->GetShape()[1] - 1);
+    }
+    cudaStream_t stream =
+        static_cast<const CUDAContext*>(ctx_)->GetStream();
+    AS_CHECK_CUDA(cudaMemcpyAsync(in_ids_->GetDataPtr(), new_tokens.data(),
+                                  batch_size_ * sizeof(int64_t),
+                                  cudaMemcpyHostToDevice, stream));
+  }
+#endif
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
 AsStatus EmbeddingT5Op::Forward(RuntimeContext* runtime_ctx) {
   void* in_ids = nullptr;
 

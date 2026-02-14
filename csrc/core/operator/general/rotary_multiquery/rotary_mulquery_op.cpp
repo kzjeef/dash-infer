@@ -374,6 +374,23 @@ AsStatus RotaryMulQueryOp::RunContext(RuntimeContext* runtime_ctx) {
   RunRotary(batch_size);
   return AsStatus::ALLSPARK_SUCCESS;
 }
+AsStatus RotaryMulQueryOp::UpdateGraphParams(RuntimeContext* runtime_ctx) {
+  if (runtime_ctx->is_context) return AsStatus::ALLSPARK_SUCCESS;
+  // Update run_step_host_ with current step values for CUDA graph replay.
+  // The captured graph includes DeepCopyWholeAsync(run_step_, run_step_host_)
+  // which reads from run_step_host_ at a fixed address. By updating the data
+  // at that address, the graph replay gets fresh step values.
+  int batch_size = runtime_ctx->GetGenCtxListSize();
+  std::vector<int> run_step_tmp(batch_size);
+  for (int batch = 0; batch < batch_size; batch++) {
+    GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(batch);
+    run_step_tmp[batch] = gen_ctx->step;
+  }
+  run_step_host_->CopyDataFrom(run_step_tmp.data(), sizeof(int) * batch_size,
+                               DeviceType::CPU, ctx_);
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
 AsStatus RotaryMulQueryOp::RunDecoder(RuntimeContext* runtime_ctx) {
   int freq_size = size_per_head_ / 2;
   int batch_size = runtime_ctx->GetGenCtxListSize();
