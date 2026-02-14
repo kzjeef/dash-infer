@@ -2022,16 +2022,8 @@ AsStatus AsModel::CudaGraphCapture(int batch_size) {
     return AsStatus::ALLSPARK_RUNTIME_ERROR;
   }
 
-  size_t num_nodes = 0;
-  cudaGraphExecGetGraph(exec, &graph);
-  if (graph) {
-    cudaGraphGetNodes(graph, nullptr, &num_nodes);
-    cudaGraphDestroy(graph);
-  }
-
   cuda_graph_cache_[bucket] = exec;
-  LOG(INFO) << "CudaGraph: captured graph for bucket " << bucket
-            << " with " << num_nodes << " nodes";
+  LOG(INFO) << "CudaGraph: captured graph for batch bucket " << bucket;
 
   return AsStatus::ALLSPARK_SUCCESS;
 }
