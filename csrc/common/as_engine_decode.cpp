@@ -208,12 +208,66 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
     return AsStatus::ALLSPARK_INVALID_CALL_ERROR;
   }
 
-  // 即使失败、异常，也要让各子线程运行完毕，以保证原子性。在可恢复的情况下，确保下一次请求有干净的环境
-  AsStatus failed_ret = AsStatus::ALLSPARK_SUCCESS;
-  std::future<AsStatus> result[nranks_];
-
   int pending_num = workers_decode_[0]->GetPendingDecodeNum();
   int64_t min_free_count = min_free_frame_count_.load();
+
+  // Single-GPU fast path: bypass threadpool entirely to avoid
+  // mutex/condvar/future overhead (~200-400us per step)
+  if (nranks_ == 1) {
+    util::Timer t_alloc;
+    int pres_frame = 0;
+    AsStatus alloc_ret;
+    try {
+      alloc_ret = workers_decode_[0]->AllocDecoderMemory(
+          pending_num, min_free_count, pres_frame);
+    } catch (std::exception& e) {
+      LOG(ERROR) << "AllocDecoderMemory Failed!"
+                 << " status: " << std::string(e.what())
+                 << " worker_id: 0";
+      if (std::string(e.what()) == "ALLSPARK_MEMORY_ERROR" ||
+          std::string(e.what()) == "ALLSPARK_CACHE_MEMORY_OUT") {
+        alloc_ret = AsStatus::ALLSPARK_CACHE_MEMORY_OUT;
+      } else {
+        alloc_ret = AsStatus::ALLSPARK_RUNTIME_ERROR;
+      }
+    }
+    if (alloc_ret != AsStatus::ALLSPARK_SUCCESS) {
+      workers_decode_[0]->FreePresFrame(pres_frame);
+      return alloc_ret;
+    }
+
+    long alloc_us = t_alloc.elapsed_micro();
+    util::Timer t_decode;
+    AsStatus decode_ret;
+    try {
+      decode_ret = workers_decode_[0]->RunTextGenerationContinue();
+    } catch (std::exception& e) {
+      if (std::string(e.what()) == "ALLSPARK_MEMORY_ERROR") {
+        LOG(ERROR) << "AsEngineImpl::RunTextGenerationContinue: "
+                      "exception caught: ALLSPARK_MEMORY_ERROR";
+        throw AsException(("ALLSPARK_MEMORY_ERROR"));
+      } else {
+        AsSaveError(e.what());
+        LOG(ERROR) << "AsEngineImpl::RunTextGenerationContinue: "
+                      "exception caught: "
+                   << e.what() << ", saved with AsSaveError";
+        decode_ret = AsStatus::ALLSPARK_RUNTIME_ERROR;
+      }
+    }
+    if (time_log && decode_ret == AsStatus::ALLSPARK_SUCCESS) {
+      long decode_us = t_decode.elapsed_micro();
+      long total_us = t_total.elapsed_micro();
+      LOG(INFO) << "EngineDecodeStep(us): total=" << total_us
+                << " alloc=" << alloc_us
+                << " decode=" << decode_us
+                << " overhead=" << (total_us - decode_us);
+    }
+    return decode_ret;
+  }
+
+  // Multi-GPU path: dispatch to workers via threadpool
+  AsStatus failed_ret = AsStatus::ALLSPARK_SUCCESS;
+  std::future<AsStatus> result[nranks_];
 
   std::vector<int> pres_frame(nranks_);
   util::Timer t_alloc;
@@ -275,7 +329,6 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
     }
   }
 
-  // 任何一个子线程reshape阶段出问题都返回
   if (failed_ret != AsStatus::ALLSPARK_SUCCESS) {
     return failed_ret;
   }
