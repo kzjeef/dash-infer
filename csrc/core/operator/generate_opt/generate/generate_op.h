@@ -74,6 +74,17 @@ class GenerateOp : public AsOperator {
   std::unique_ptr<AsTensor> cur_len_list;
   std::unique_ptr<AsTensor> input_len_list;
   std::unique_ptr<AsTensor> suppress_repetition_in_generation_list;
+
+  // Packed buffer for batch gen config: all 12 per-batch arrays packed into
+  // one contiguous device tensor, updated with a single H2D memcpy.
+  // Layout: [topk(int) | topp(float) | temperature(float) |
+  //          rep_penalty(float) | pres_penalty(float) | freq_penalty(float) |
+  //          ngram(int) | min_len(int) | eos_id(int) |
+  //          cur_len(int) | input_len(int) | suppress_rep(int)]
+  // Each field is batch_size elements. Total: 12 * batch_size * 4 bytes.
+  static constexpr int kNumPackedFields = 12;
+  std::unique_ptr<AsTensor> packed_gencfg_device_;
+  std::vector<char> packed_gencfg_host_;
   void* topk_value_ptr_;
   void* topk_indice_ptr_;
   void* topp_value_ptr_;

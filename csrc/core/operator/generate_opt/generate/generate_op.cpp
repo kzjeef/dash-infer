@@ -244,15 +244,46 @@ void GenerateOp::build_batch_gencfg(RuntimeContext* runtime_ctx,
   } else {
     batch_size = runtime_ctx->GetGenCtxListSize();
   }
-  std::vector<float> host_repetition_penalty_list(batch_size);
-  std::vector<float> host_presence_penalty_list(batch_size);
-  std::vector<float> host_frequency_penalty_list(batch_size);
-  std::vector<int> host_no_repeat_ngram_size_list(batch_size);
-  std::vector<int> host_min_length_list(batch_size);
-  std::vector<int> host_eos_token_id_list(batch_size);
-  std::vector<int> host_cur_len_list(batch_size);
-  std::vector<int> host_input_len_list(batch_size);
-  std::vector<int> host_suppress_repetition_in_generation_list(batch_size);
+
+  // Pack all 9 per-batch config arrays into one contiguous host buffer,
+  // then do a single H2D memcpy. This replaces 9 separate 4-byte copies.
+  //
+  // Layout (each field is batch_size elements, all 4 bytes each):
+  //   [0] repetition_penalty (float)
+  //   [1] presence_penalty (float)
+  //   [2] frequency_penalty (float)
+  //   [3] no_repeat_ngram_size (int)
+  //   [4] min_length (int)
+  //   [5] eos_token_id (int)
+  //   [6] cur_len (int)
+  //   [7] input_len (int)
+  //   [8] suppress_repetition_in_generation (int)
+  constexpr int kFields = 9;
+  size_t field_bytes = sizeof(int) * batch_size;  // all fields are 4 bytes
+  size_t total_bytes = kFields * field_bytes;
+
+  packed_gencfg_host_.resize(total_bytes);
+  char* host_ptr = packed_gencfg_host_.data();
+
+  // Ensure device buffer is large enough
+  if (!packed_gencfg_device_ ||
+      packed_gencfg_device_->GetSizeInByte() < (int64_t)total_bytes) {
+    packed_gencfg_device_ = std::make_unique<AsTensor>(
+        "packed_gencfg", ctx->GetDeviceType(), DataType::INT8, DataMode::DENSE,
+        Shape{(int64_t)total_bytes});
+  }
+
+  // Pointers into host buffer
+  float* h_rep_penalty = (float*)(host_ptr + 0 * field_bytes);
+  float* h_pres_penalty = (float*)(host_ptr + 1 * field_bytes);
+  float* h_freq_penalty = (float*)(host_ptr + 2 * field_bytes);
+  int* h_ngram = (int*)(host_ptr + 3 * field_bytes);
+  int* h_min_len = (int*)(host_ptr + 4 * field_bytes);
+  int* h_eos_id = (int*)(host_ptr + 5 * field_bytes);
+  int* h_cur_len = (int*)(host_ptr + 6 * field_bytes);
+  int* h_input_len = (int*)(host_ptr + 7 * field_bytes);
+  int* h_suppress_rep = (int*)(host_ptr + 8 * field_bytes);
+
   for (int i = 0; i < batch_size; i++) {
     GenerateContext* gen_ctx;
     if (runtime_ctx->is_context) {
@@ -261,54 +292,34 @@ void GenerateOp::build_batch_gencfg(RuntimeContext* runtime_ctx,
       gen_ctx = runtime_ctx->GetGenCtx(i);
     }
     GenerateConfig gen_cfg = gen_ctx->gen_cfg;
-    host_repetition_penalty_list[i] = gen_cfg.repetition_penalty;
-    host_presence_penalty_list[i] = gen_cfg.presence_penalty;
-    host_frequency_penalty_list[i] = gen_cfg.frequency_penalty;
-    host_no_repeat_ngram_size_list[i] = gen_cfg.no_repeat_ngram_size;
-    host_min_length_list[i] = gen_cfg.min_length;
-    host_eos_token_id_list[i] = gen_cfg.eos_token_id;
-    host_cur_len_list[i] = gen_ctx->step + gen_ctx->in_length_bias;
-    host_input_len_list[i] = gen_ctx->input_len;
-    host_suppress_repetition_in_generation_list[i] =
-        gen_cfg.suppress_repetition_in_generation ? 1 : 0;
+    h_rep_penalty[i] = gen_cfg.repetition_penalty;
+    h_pres_penalty[i] = gen_cfg.presence_penalty;
+    h_freq_penalty[i] = gen_cfg.frequency_penalty;
+    h_ngram[i] = gen_cfg.no_repeat_ngram_size;
+    h_min_len[i] = gen_cfg.min_length;
+    h_eos_id[i] = gen_cfg.eos_token_id;
+    h_cur_len[i] = gen_ctx->step + gen_ctx->in_length_bias;
+    h_input_len[i] = gen_ctx->input_len;
+    h_suppress_rep[i] = gen_cfg.suppress_repetition_in_generation ? 1 : 0;
   }
-  repetition_penalty_list->CopyDataFrom(host_repetition_penalty_list.data(),
-                                        sizeof(float) * batch_size,
-                                        DeviceType::CPU, ctx);
-  presence_penalty_list->CopyDataFrom(host_presence_penalty_list.data(),
-                                      sizeof(float) * batch_size,
-                                      DeviceType::CPU, ctx);
-  frequency_penalty_list->CopyDataFrom(host_frequency_penalty_list.data(),
-                                       sizeof(float) * batch_size,
-                                       DeviceType::CPU, ctx);
-  no_repeat_ngram_size_list->CopyDataFrom(host_no_repeat_ngram_size_list.data(),
-                                          sizeof(int) * batch_size,
-                                          DeviceType::CPU, ctx);
-  min_length_list->CopyDataFrom(host_min_length_list.data(),
-                                sizeof(int) * batch_size, DeviceType::CPU, ctx);
-  eos_token_id_list->CopyDataFrom(host_eos_token_id_list.data(),
-                                  sizeof(int) * batch_size, DeviceType::CPU,
-                                  ctx);
-  cur_len_list->CopyDataFrom(host_cur_len_list.data(), sizeof(int) * batch_size,
-                             DeviceType::CPU, ctx);
-  input_len_list->CopyDataFrom(host_input_len_list.data(),
-                               sizeof(int) * batch_size, DeviceType::CPU, ctx);
-  suppress_repetition_in_generation_list->CopyDataFrom(
-      host_suppress_repetition_in_generation_list.data(),
-      sizeof(int) * batch_size, DeviceType::CPU, ctx);
 
+  // Single H2D copy for all 9 fields
+  packed_gencfg_device_->CopyDataFrom(host_ptr, total_bytes, DeviceType::CPU,
+                                      ctx);
+
+  // Set up BatchGencfg pointers into the device buffer
+  char* dev_ptr = (char*)packed_gencfg_device_->GetDataPtr();
   batch_gencfg.batch_size = batch_size;
-  batch_gencfg.repetition_penalty_list = repetition_penalty_list->GetDataPtr();
-  batch_gencfg.presence_penalty_list = presence_penalty_list->GetDataPtr();
-  batch_gencfg.frequency_penalty_list = frequency_penalty_list->GetDataPtr();
-  batch_gencfg.no_repeat_ngram_size_list =
-      no_repeat_ngram_size_list->GetDataPtr();
-  batch_gencfg.min_length_list = min_length_list->GetDataPtr();
-  batch_gencfg.eos_token_id_list = eos_token_id_list->GetDataPtr();
-  batch_gencfg.cur_len_list = cur_len_list->GetDataPtr();
-  batch_gencfg.input_len_list = input_len_list->GetDataPtr();
+  batch_gencfg.repetition_penalty_list = dev_ptr + 0 * field_bytes;
+  batch_gencfg.presence_penalty_list = dev_ptr + 1 * field_bytes;
+  batch_gencfg.frequency_penalty_list = dev_ptr + 2 * field_bytes;
+  batch_gencfg.no_repeat_ngram_size_list = dev_ptr + 3 * field_bytes;
+  batch_gencfg.min_length_list = dev_ptr + 4 * field_bytes;
+  batch_gencfg.eos_token_id_list = dev_ptr + 5 * field_bytes;
+  batch_gencfg.cur_len_list = dev_ptr + 6 * field_bytes;
+  batch_gencfg.input_len_list = dev_ptr + 7 * field_bytes;
   batch_gencfg.suppress_repetition_in_generation_list =
-      suppress_repetition_in_generation_list->GetDataPtr();
+      dev_ptr + 8 * field_bytes;
 }
 AsStatus GenerateOp::Reshape(RuntimeContext* runtime_ctx) {
   const int max_batch = ctx_->GetModelMaxBatch();
@@ -375,6 +386,7 @@ AsStatus GenerateOp::Reshape(RuntimeContext* runtime_ctx) {
                                       sizeof(float) * batch_size_,
                                       DeviceType::CPU, ctx_);
 
+      // build_batch_gencfg packs 9 fields into 1 H2D copy (was 9 separate)
       build_batch_gencfg(runtime_ctx, batch_gencfg_, ctx_);
 
       AS_CHECK_STATUS(dec_ids_->SetShape(Shape{batch_size_, 1}));
