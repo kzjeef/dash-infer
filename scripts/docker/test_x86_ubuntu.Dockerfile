@@ -1,45 +1,43 @@
-FROM ubuntu:22.04
+# DashInfer x86 CPU-only test environment
+# Ubuntu 24.04 + Python 3.10
+#
+# Build:
+#   docker build -f scripts/docker/test_x86_ubuntu.Dockerfile -t dashinfer/test-x86-ubuntu:latest .
+# Run:
+#   docker run -it dashinfer/test-x86-ubuntu:latest
 
-RUN apt-get update && \
-    apt-get install numactl libopenmpi-dev curl -y
+FROM ubuntu:24.04
 
-ARG PY_VER=3.8
+ARG PY_VER=3.10
 
-RUN curl -LO https://repo.anaconda.com/miniconda/Miniconda3-py38_23.11.0-2-Linux-x86_64.sh \
-    && bash Miniconda3-py38_23.11.0-2-Linux-x86_64.sh -p /miniconda -b \
-    && rm -f Miniconda3-py38_23.11.0-2-Linux-x86_64.sh
-ENV PATH=/miniconda/bin:${PATH}
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
 
-##########################################################################
-# uncomment if want to use anaconda mirror
-##########################################################################
-# RUN echo -e "\
-# channels:\n\
-#   - defaults\n\
-# show_channel_urls: true\n\
-# default_channels:\n\
-#   - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main\n\
-#   - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r\n\
-#   - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/msys2\n\
-# custom_channels:\n\
-#   conda-forge: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   msys2: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   bioconda: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   menpo: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   pytorch: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   pytorch-lts: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   simpleitk: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   deepmodeling: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-# " > /root/.condarc
+# System packages + Python 3.10 from deadsnakes PPA
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update -y && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    python${PY_VER} \
+    python${PY_VER}-dev \
+    python${PY_VER}-venv \
+    numactl \
+    libopenmpi-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN conda clean -i && conda config --show channels && conda create -y --name test_py python==${PY_VER} && conda update -n base conda
-SHELL ["conda", "run", "-n", "test_py", "/bin/bash", "-c"]
-RUN echo "source activate test_py" >> /root/.bashrc && source /root/.bashrc
+# Python virtual environment with Python 3.10
+RUN python${PY_VER} -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
 
-##########################################################################
-# uncomment if want to use pip mirror
-##########################################################################
-# RUN mkdir -p /root/.pip/
-# RUN echo -e "[global]\ntrusted-host=mirrors.aliyun.com\nindex-url = http://mirrors.aliyun.com/pypi/simple\n\n[install]\nuse-wheel=yes" > /root/.pip/pip.conf
+# Minimal test dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+        pytest \
+        "transformers>=4.40,<5" \
+        tokenizers \
+        accelerate \
+        "protobuf>=3.18,<4"
 
 WORKDIR /root/

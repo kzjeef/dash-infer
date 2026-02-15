@@ -1,0 +1,38 @@
+{
+  "description": "Baseline for Qwen2.5-7B-Instruct on CUDA with CUDA Graph enabled. DashInfer v2.0.0 (local wheel), measured 2026-02-15 on H200 GPU.",
+  "source": "docker: dashinfer/dev-ubuntu-cuda:latest (Ubuntu 24.04 + CUDA 12.6 + Python 3.10), dashinfer-2.0.0-cp310-cp310-linux_x86_64.whl, lm_eval==0.4.11, transformers==4.57.6, ALLSPARK_CUDA_GRAPH=1",
+  "config": {
+    "model_path": "Qwen/Qwen2.5-7B-Instruct",
+    "device": "cuda:0",
+    "data_type": "bfloat16",
+    "max_length": 4096,
+    "max_batch": 1,
+    "weight_only_quant": true,
+    "env": {
+      "ALLSPARK_CUDA_GRAPH": "1"
+    }
+  },
+  "results": {
+    "humaneval": {
+      "pass@1,create_test": 0.6159,
+      "pass@1_stderr,create_test": 0.0381,
+      "num_samples": 164,
+      "elapsed_seconds": 602.1
+    }
+  },
+  "comparison": {
+    "vs_pypi_v2.1.0_no_cudagraph": {
+      "humaneval_pass_at_1": 0.6159,
+      "delta": 0.0,
+      "note": "Identical results — CUDA Graph does not affect accuracy"
+    },
+    "vs_qwen_official": {
+      "humaneval_pass_at_1_official": 0.610,
+      "delta": 0.006,
+      "note": "Within expected variance"
+    }
+  },
+  "thresholds": {
+    "humaneval/pass@1,create_test": 0.05
+  }
+}

@@ -27,24 +27,18 @@ ENV LIBRARY_PATH=/opt/arm/gcc-13.2.0_RHEL-8/lib64${LIBRARY_PATH:+:${LIBRARY_PATH
 ENV LD_LIBRARY_PATH=/opt/arm/gcc-13.2.0_RHEL-8/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
 
 ##########################################################################
-# uncomment if want to use anaconda mirror
+# conda uses default channels; set mirrors if needed for China builds:
+#   conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main
 ##########################################################################
-RUN conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge  && \
-    conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/ && \
-    conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/ && \
-    conda config --remove channels defaults && \
-    conda config --set show_channel_urls yes
 
 RUN conda clean -i && conda config --show channels && conda create -y --name ds_py python==${PY_VER} && conda update -n base conda
 SHELL ["conda", "run", "-n", "ds_py", "/bin/bash", "-c"]
 RUN echo "source activate ds_py" >> /root/.bashrc && source /root/.bashrc
 
 ##########################################################################
-# uncomment if want to use pip mirror
+# pip uses default PyPI; set mirrors if needed for China builds:
+#   pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 ##########################################################################
-RUN mkdir -p /root/.pip && \
-echo $'[global] \n\
-index-url = https://mirrors.aliyun.com/pypi/simple/ \n' > /root/.pip/pip.conf
 
 RUN yum install -y atlas-devel
 RUN pip3 install auditwheel

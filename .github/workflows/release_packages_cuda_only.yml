@@ -17,16 +17,13 @@ jobs:
     strategy:
       matrix:
         arch: [X64]
-        image: ["docker.cnb.cool/thinksrc/dashinfer/dev-ubi8-cu124:latest"]
+        image: ["docker.cnb.cool/thinksrc/dashinfer/dev-ubuntu-cuda:latest"]
         enable_cuda: [1]
 
     runs-on: [self-hosted, Linux, "${{ matrix.arch }}"]
     container:
       image: ${{ matrix.image }}
     env:
-      # force use node16 instead of node20
-      # otherwise it may cause GLIBCXX_2.27 not found
-      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       ENABLE_CUDA: ${{ matrix.enable_cuda }}
     defaults:
       run:
@@ -42,11 +39,7 @@ jobs:
     - name: Build tgz package
       shell: bash
       run: |
-        source /root/.bashrc
-        if [ -f "/miniconda/etc/profile.d/conda.sh" ]; then
-            source /miniconda/etc/profile.d/conda.sh
-        fi
-        source activate ds_py
+        source /opt/venv/bin/activate
 
         git config --global --add safe.directory '*'
         git fetch --tags -f
@@ -58,20 +51,14 @@ jobs:
 
         echo "ENABLE_CUDA value: $ENABLE_CUDA"
 
-        # export ENABLE_MULTINUMA="ON"
-        if [[ "${{ matrix.arch }}" == "ARM64" ]]; then
-            export AS_PLATFORM="armclang"
-            bash build.sh
+        if [ "$ENABLE_CUDA" -eq "1" ];
+        then
+            export AS_PLATFORM="cuda"
+            export AS_CUDA_SM="'70;75;80;86;89;90a'"
+            bash scripts/release/cpp_build_cuda.sh
         else
-            if [ "$ENABLE_CUDA" -eq "1" ];
-            then
-                export AS_PLATFORM="cuda"
-                export AS_CUDA_SM="'70;75;80;86;89;90a'"
-                bash scripts/release/cpp_build_cuda.sh
-            else
-                export AS_PLATFORM="x86"
-                bash build.sh
-            fi
+            export AS_PLATFORM="x86"
+            bash build.sh
         fi
 
     - name: Upload tgz package
@@ -85,7 +72,7 @@ jobs:
     strategy:
       matrix:
         arch: [X64]
-        image: ["docker.cnb.cool/thinksrc/dashinfer/dev-ubi8-cu124:latest"]
+        image: ["docker.cnb.cool/thinksrc/dashinfer/dev-ubuntu-cuda:latest"]
         enable_cuda: [1]
     runs-on: [self-hosted, Linux, "${{ matrix.arch }}"]
     container:
@@ -104,10 +91,7 @@ jobs:
       shell: bash
       run: |
         set -x
-        source /root/.bashrc
-        if [ -f "/miniconda/etc/profile.d/conda.sh" ]; then
-            source /miniconda/etc/profile.d/conda.sh
-        fi
+        source /opt/venv/bin/activate
 
         git config --global --add safe.directory '*'
         git fetch --tags -f
@@ -118,17 +102,13 @@ jobs:
 
         echo "ENABLE_CUDA value: $ENABLE_CUDA"
 
-        if [[ "${{ matrix.arch }}" == "ARM64" ]]; then
-            bash scripts/release/python_manylinux_build.sh
+        if [ "$ENABLE_CUDA" -eq "1" ];
+        then
+          export AS_PLATFORM="cuda"
+          export AS_CUDA_SM="'70;75;80;86;89;90a'"
+          bash scripts/release/python_manylinux_build_cuda.sh
         else
-            if [ "$ENABLE_CUDA" -eq "1" ];
-            then
-              export AS_PLATFORM="cuda"
-              export AS_CUDA_SM="'70;75;80;86;89;90a'"
-              bash scripts/release/python_manylinux_build_cuda.sh
-            else
-              bash scripts/release/python_manylinux_build.sh
-            fi
+          bash scripts/release/python_manylinux_build.sh
         fi
 
     - name: Upload wheels
