@@ -13,6 +13,17 @@
 
 namespace allspark {
 
+// Fast f32 -> bf16 conversion with round-to-nearest-even
+static inline void f32_to_bf16(const float* src, uint16_t* dst, int64_t count) {
+  for (int64_t i = 0; i < count; i++) {
+    uint32_t bits;
+    memcpy(&bits, &src[i], 4);
+    uint32_t rounding = (bits >> 16) & 1;
+    bits += 0x7FFF + rounding;
+    dst[i] = (uint16_t)(bits >> 16);
+  }
+}
+
 AsStatus GemmOpCPU::Init(const OperatorProto& op_proto,
                          const DeviceContext& ctx, const TensorMap& weights_map,
                          TensorMap* tensor_map) {
@@ -28,10 +39,15 @@ AsStatus GemmOpCPU::InitV2(const OperatorProto& op_proto,
   AS_CHECK_STATUS(GemmOpBase::InitV2(op_proto, ctx, weights_map, weights_buffer,
                                      tensor_map, runtime_ctx));
 
-  // BF16 weights are converted on-the-fly in Forward() using MKL
-  // cblas_gemm_bf16bf16f32. No weight pre-conversion needed — MKL handles
-  // f32→bf16 input conversion, and weights stay as f32 (converted per-call).
-  // This is simpler and avoids tensor lifecycle issues during init.
+  // For BF16 mode: convert FP32 weights to BF16 once and cache.
+  // If weights are already BF16 (pre-stored), no conversion needed.
+  if (weight_data_type_ == DataType::BFLOAT16 &&
+      weights_[0]->GetDataType() != DataType::BFLOAT16) {
+    int64_t w_count = weights_[0]->GetShape().Count();
+    w_bf16_cache_.resize(w_count);
+    f32_to_bf16(static_cast<const float*>(weights_[0]->GetDataPtr()),
+                w_bf16_cache_.data(), w_count);
+  }
 
   return AsStatus::ALLSPARK_SUCCESS;
 }
@@ -39,6 +55,16 @@ AsStatus GemmOpCPU::InitV2(const OperatorProto& op_proto,
 AsStatus GemmOpCPU::Reshape(RuntimeContext* runtime_ctx) {
   int yn = n_;
   AS_CHECK_STATUS(GemmOpBase::Reshape(yn));
+
+  // Pre-allocate BF16 input buffer for the current m_ dimension.
+  // This avoids malloc/free in every Forward call.
+  if (weight_data_type_ == DataType::BFLOAT16) {
+    int64_t in_count = m_ * k_;
+    if ((int64_t)in_bf16_buf_.size() < in_count) {
+      in_bf16_buf_.resize(in_count);
+    }
+  }
+
   return AsStatus::ALLSPARK_SUCCESS;
 }
 
@@ -56,44 +82,23 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
   }
 
   if (weight_data_type_ == DataType::BFLOAT16) {
-    // BF16 path: use MKL cblas_gemm_bf16bf16f32 for AMX-accelerated matmul.
+    // BF16 path: MKL cblas_gemm_bf16bf16f32 (AMX-accelerated)
     // C(f32) = alpha * A(bf16) * B(bf16) + beta * C
 
-    // Helper: convert f32 -> bf16 with rounding
-    auto f32_to_bf16 = [](const float* src, uint16_t* dst, int64_t count) {
-      for (int64_t i = 0; i < count; i++) {
-        uint32_t bits;
-        memcpy(&bits, &src[i], 4);
-        uint32_t rounding = (bits >> 16) & 1;
-        bits += 0x7FFF + rounding;
-        dst[i] = (uint16_t)(bits >> 16);
-      }
-    };
-
-    // Convert f32 input to bf16 on-the-fly (input is always f32 from LayerNorm)
+    // Convert f32 input to bf16 into pre-allocated buffer (no malloc)
     int64_t in_count = m_ * k_;
-    std::vector<uint16_t> in_bf16(in_count);
-    f32_to_bf16(static_cast<const float*>(in), in_bf16.data(), in_count);
+    f32_to_bf16(static_cast<const float*>(in), in_bf16_buf_.data(), in_count);
 
-    // Get BF16 weight pointer: if weights are already BF16 (pre-stored),
-    // use them directly; otherwise convert from FP32 and cache.
+    // Get BF16 weight pointer: pre-stored BF16 or cached conversion
     const MKL_BF16* w_bf16_ptr;
     if (weights_[0]->GetDataType() == DataType::BFLOAT16) {
-      // Weights pre-stored as BF16 — use directly, no conversion needed
       w_bf16_ptr = reinterpret_cast<const MKL_BF16*>(
           weights_[0]->GetDataPtr());
     } else {
-      // Weights are FP32 — convert and cache on first call
-      if (w_bf16_cache_.empty()) {
-        int64_t w_count = weights_[0]->GetShape().Count();
-        w_bf16_cache_.resize(w_count);
-        f32_to_bf16(static_cast<const float*>(weights_[0]->GetDataPtr()),
-                     w_bf16_cache_.data(), w_count);
-      }
       w_bf16_ptr = reinterpret_cast<const MKL_BF16*>(w_bf16_cache_.data());
     }
 
-    // Bias: broadcast first, then GEMM with beta=1
+    // Bias broadcast + binary residual
     float* out_f = static_cast<float*>(out);
     float beta = 0.0f;
     if (bias) {
@@ -109,15 +114,13 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
 
     CBLAS_TRANSPOSE transB_flag = transB_ ? CblasTrans : CblasNoTrans;
     cblas_gemm_bf16bf16f32(
-        CblasRowMajor,
-        CblasNoTrans,
-        transB_flag,
+        CblasRowMajor, CblasNoTrans, transB_flag,
         m_, n_, k_, alpha_,
-        reinterpret_cast<const MKL_BF16*>(in_bf16.data()), lda_,
+        reinterpret_cast<const MKL_BF16*>(in_bf16_buf_.data()), lda_,
         w_bf16_ptr, ldb_,
         beta, out_f, n_);
   } else {
-    // FP32 path: use MKL cblas_sgemm via GemmWraper
+    // FP32 path: MKL cblas_sgemm
     cpu::GemmWraper<float>(
         static_cast<float*>(out),
         static_cast<const float*>(in),
@@ -130,7 +133,7 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
         static_cast<const float*>(bin_in));
   }
 
-  // Post-op: activation
+  // Post-op: fused activation
   if (activation_ != UNARYTYPE_UNDEFINED) {
     float* out_f = static_cast<float*>(out);
     int64_t total = m_ * n_;
