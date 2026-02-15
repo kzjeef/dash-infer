@@ -1,14 +1,14 @@
-## Quick Start Guide for OpenAI API Chat Server
+## OpenAI API Chat Server 快速开始
 
-DashInfer provides a native OpenAI-compatible API server module without FastChat.
+DashInfer 提供项目内原生 OpenAI 兼容 API Server（不依赖 FastChat）。
 
-Install optional server dependencies first:
+请先安装可选 server 依赖：
 
 ```shell
 pip install "dashinfer[server]"
 ```
 
-### 1. Start server
+### 1. 启动服务
 
 ```shell
 python -m dashinfer.allspark.openai_server \
@@ -19,7 +19,7 @@ python -m dashinfer.allspark.openai_server \
   --port 8000
 ```
 
-For ModelScope model id:
+如果使用 ModelScope 模型名：
 
 ```shell
 python -m dashinfer.allspark.openai_server \
@@ -29,7 +29,7 @@ python -m dashinfer.allspark.openai_server \
   --device-list 0
 ```
 
-### 2. Test chat completion
+### 2. 测试普通对话
 
 ```shell
 curl http://127.0.0.1:8000/v1/chat/completions \
@@ -37,12 +37,12 @@ curl http://127.0.0.1:8000/v1/chat/completions \
   -d '{
     "model": "Qwen2.5-7B-Instruct",
     "messages": [
-      {"role": "user", "content": "Hello! What is your name?"}
+      {"role": "user", "content": "你好，请简单介绍你自己。"}
     ]
   }'
 ```
 
-### 3. Test streaming
+### 3. 测试流式输出
 
 ```shell
 curl http://127.0.0.1:8000/v1/chat/completions \
@@ -51,16 +51,15 @@ curl http://127.0.0.1:8000/v1/chat/completions \
     "model": "Qwen2.5-7B-Instruct",
     "stream": true,
     "messages": [
-      {"role": "user", "content": "Write 3 short jokes."}
+      {"role": "user", "content": "写三个简短笑话。"}
     ]
   }'
 ```
 
-### 4. Function/Tool Calling
+### 4. 测试 Function/Tool Calling
 
-The server supports OpenAI-style `tools` / `tool_choice` and legacy `functions` / `function_call`.
-When the model decides to call a tool, response `finish_reason` becomes `tool_calls` and
-`message.tool_calls` is returned.
+Server 支持 OpenAI 风格 `tools` / `tool_choice`，也兼容旧版 `functions` / `function_call`。
+当模型决定调用工具时，返回 `finish_reason=tool_calls`，并携带 `message.tool_calls`。
 
 ```shell
 curl http://127.0.0.1:8000/v1/chat/completions \
@@ -68,14 +67,14 @@ curl http://127.0.0.1:8000/v1/chat/completions \
   -d '{
     "model": "Qwen2.5-7B-Instruct",
     "messages": [
-      {"role": "user", "content": "What is the weather in Beijing?"}
+      {"role": "user", "content": "请查询北京天气。"}
     ],
     "tools": [
       {
         "type": "function",
         "function": {
           "name": "get_weather",
-          "description": "Get weather by city",
+          "description": "根据城市查询天气",
           "parameters": {
             "type": "object",
             "properties": {
@@ -90,3 +89,23 @@ curl http://127.0.0.1:8000/v1/chat/completions \
   }'
 ```
 
+### 5. 运行自动化接口测试
+
+先启动 server，然后执行：
+
+```shell
+python tests/openai_server/test_openai_server.py \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --model Qwen2.5-7B-Instruct
+```
+
+如需严格要求返回 `tool_calls`（失败即退出非零）：
+
+```shell
+python tests/openai_server/test_openai_server.py \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --model Qwen2.5-7B-Instruct \
+  --strict-tool-call
+```
