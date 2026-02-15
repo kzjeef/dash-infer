@@ -147,11 +147,17 @@ python performance_test_qwen_v15.py --device_ids 0 1 # test multi-NUMA performan
 
 > On CPUs with multiple NUMA nodes, please refer to [Single/Multi-NUMA Inference] (examples_python.md#L33) section for best performance.
 
-# 2_evaluation
+# Evaluation
 
-The code in the `<path_to_dashinfer>/examples/python/2_evaluation` directory is from [QwenLM/Qwen](https://github.com/QwenLM/Qwen/tree/main/eval). The original code uses transformers for inference. In this repository, the accuracy testing code substitutes the inference engine with DashInfer.
+## New: lm-evaluation-harness based regression testing
 
-For accuracy evaluation, please refer to [EVALUATION.md](../../examples/python/2_evaluation/EVALUATION.md).
+The recommended way to run accuracy evaluation is via the `lm-evaluation-harness` adapter in `tests/eval/`. This supports standard benchmarks (MMLU, GSM8K, HellaSwag, etc.) with automated regression detection. See [tests/eval/README.md](../../tests/eval/README.md) for details.
+
+## Legacy: Qwen-based evaluation scripts
+
+The legacy evaluation scripts (originally from [QwenLM/Qwen](https://github.com/QwenLM/Qwen/tree/main/eval)) have been moved to `tests/eval/legacy/`. These scripts use the older `EngineHelper` API and are hardcoded for Qwen-7B-Chat.
+
+For legacy accuracy evaluation, refer to [EVALUATION.md](../../tests/eval/legacy/cpu/EVALUATION.md).
 
 # 3_gradio
 
