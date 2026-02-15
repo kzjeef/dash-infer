@@ -24,5 +24,7 @@ class GemmOpCPU : public GemmOpBase {
  protected:
   DataType weight_data_type_ = DataType::FLOAT32;
   int reshape_cnt = 0;
+  // Cached BF16 weights (converted from FP32 on first Forward call)
+  std::vector<uint16_t> w_bf16_cache_;
 };
 }  // namespace allspark
