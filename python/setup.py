@@ -274,7 +274,14 @@ setup(name=f"{py_pkg_name}",
       setup_requires=["jinja2"],
       install_requires=["transformers>=4.40.0", "torch", "accelerate>=1.1.0", "ruamel.yaml"],
       extras_require={
-          "server": ["fastapi", "uvicorn", "pydantic"],
+          "serving": ["fastapi>=0.100.0", "uvicorn[standard]>=0.20.0"],
+          "vlm": ["dashinfer-vlm"],
+          "all": ["fastapi>=0.100.0", "uvicorn[standard]>=0.20.0", "dashinfer-vlm"],
+      },
+      entry_points={
+          "console_scripts": [
+              "dashinfer_serve = dashinfer.serving.__main__:main",
+          ],
       },
       zip_safe=False,
       python_requires=">=3.10",

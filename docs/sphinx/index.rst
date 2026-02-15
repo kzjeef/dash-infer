@@ -26,7 +26,7 @@ DashInfer is a highly optimized LLM inference engine with the following core fea
 
   - **MultiModal LMs**: DashInfer supports MultiModal Language Models (MMLMs) including Qwen-VL, Qwen-AL, and Qwen2-VL.
 
-- **OpenAI API Server**: DashInfer can easily serve with fastChat to achieve OpenAI-compatible API server.
+- **OpenAI API Server**: DashInfer provides a built-in OpenAI-compatible API server for both LLM and VLM serving.
 
 - **Multi-Programming-Language API**: Both C++ and Python interfaces are provided. It is possible to extend C++ interface to Java, Rust and other programming languages, via standard cross-language interfaces.
 
@@ -51,9 +51,14 @@ Table of Contents
 
    get_started/quick_start_api_server_en.md
 
-   get_started/quick_start_api_server_cn.md
-
    get_started/env_var_options_en
+
+.. _serving:
+.. toctree::
+   :maxdepth: 2
+   :caption: OpenAI API Server
+
+   serving/serving_guide.md
 
 .. _supported_models:
 .. toctree::
