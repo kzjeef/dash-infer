@@ -1,0 +1,27 @@
+{
+  "description": "Example baseline for Qwen2.5-7B-Instruct on CPU (float32, weight-only quant). Replace values with actual measurements from a known-good build.",
+  "source": "manually created template",
+  "config": {
+    "model_path": "qwen/Qwen2.5-7B-Instruct",
+    "device": "cpu",
+    "data_type": "float32",
+    "max_length": 4096,
+    "suite": "standard"
+  },
+  "results": {
+    "tinyBenchmarks": {
+      "acc,none": 0.68,
+      "acc_norm,none": 0.72
+    },
+    "gsm8k": {
+      "exact_match,strict-match": 0.65,
+      "exact_match,flexible-extract": 0.67
+    }
+  },
+  "thresholds": {
+    "tinyBenchmarks/acc,none": 0.03,
+    "tinyBenchmarks/acc_norm,none": 0.03,
+    "gsm8k/exact_match,strict-match": 0.02,
+    "gsm8k/exact_match,flexible-extract": 0.02
+  }
+}
