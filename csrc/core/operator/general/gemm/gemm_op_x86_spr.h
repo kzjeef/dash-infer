@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    gemm_op_x86_spr.h
  */
 

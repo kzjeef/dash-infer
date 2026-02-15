@@ -16,7 +16,7 @@ Usage:
         --baseline baselines/cpu_qwen2.5_7b.json \
         --results eval_results/eval_standard_20260215.json
 
-Copyright (c) Alibaba, Inc. and its affiliates.
+ Copyright (c) 2025-2026 DashInfer Team.
 """
 
 import argparse

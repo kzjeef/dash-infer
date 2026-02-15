@@ -1,5 +1,6 @@
 '''
  Copyright (c) Alibaba, Inc. and its affiliates.
+ Copyright (c) 2025-2026 DashInfer Team.
  @file    model_config.py
 '''
 from transformers import Qwen2Config, Qwen2MoeConfig, LlamaConfig
