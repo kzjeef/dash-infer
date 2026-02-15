@@ -35,7 +35,7 @@ enum class FlashQKVFormat {
   UNKNOWN = 99
 };
 
-using flashv2_t = Flash_fwd_params;
+using flashv2_t = flash::Flash_fwd_params;
 
 size_t flashv2_wss(flashv2_t& params);
 

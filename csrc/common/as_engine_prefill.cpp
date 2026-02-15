@@ -135,10 +135,10 @@ AsStatus AsEngineImpl::RunPrefillWorker(std::string model_name) {
     return status;
   }
 
-  status = this->RunTextGenerationContext(model_name.c_str());
+  status = this->RunTextGenerationPrefill(model_name.c_str());
   if (status != AsStatus::ALLSPARK_SUCCESS &&
       status != AsStatus::ALLSPARK_EMPTY_REQUEST) {
-    LOG(ERROR) << "RunTextGenerationContext Failed:"
+    LOG(ERROR) << "RunTextGenerationPrefill Failed:"
                << AsGetErrorByCode(status);
   }
 
@@ -154,7 +154,7 @@ AsStatus AsEngineImpl::RunEngineContext(std::string model_name) {
       LOG(INFO) << "AsSchedulingStrategy::ContextPriority";
       int run_context_count = 0;
       while (true) {
-        AsStatus status = this->RunTextGenerationContext(model_name.c_str());
+        AsStatus status = this->RunTextGenerationPrefill(model_name.c_str());
         run_context_count += 1;
         if (status != AsStatus::ALLSPARK_SUCCESS &&
             status != AsStatus::ALLSPARK_EMPTY_REQUEST &&
@@ -174,7 +174,7 @@ AsStatus AsEngineImpl::RunEngineContext(std::string model_name) {
     case AsSchedulingStrategy::Balance: {
       LOG(INFO) << "AsSchedulingStrategy::Balance";
       // just run one context,must be new context
-      AsStatus status = this->RunTextGenerationContext(model_name.c_str());
+      AsStatus status = this->RunTextGenerationPrefill(model_name.c_str());
       return status;
     }
     default: {
@@ -185,9 +185,9 @@ AsStatus AsEngineImpl::RunEngineContext(std::string model_name) {
   return AsStatus::ALLSPARK_UNKNOWN_ERROR;
 }
 
-AsStatus AsEngineImpl::RunTextGenerationContext(const char* model_name) {
+AsStatus AsEngineImpl::RunTextGenerationPrefill(const char* model_name) {
   DLOG(INFO) << "[" << model_name << "] "
-             << "AsEngineImpl::RunTextGenerationContext" << std::endl;
+             << "AsEngineImpl::RunTextGenerationPrefill" << std::endl;
 
   TracerLog t(device_ctx_->GetDeviceType(), "RunCtx", 2);
   // check model registered
@@ -267,9 +267,9 @@ AsStatus AsEngineImpl::RunTextGenerationContext(const char* model_name) {
   for (int i = 0; i < nranks_; ++i) {
     result[i] = threadpool_->enqueue(i, [this, i]() {
       try {
-        return workers_[i]->RunTextGenerationContext();
+        return workers_[i]->RunTextGenerationPrefill();
       } catch (std::exception& e) {
-        LOG(ERROR) << "RunTextGenerationContext Failed:"
+        LOG(ERROR) << "RunTextGenerationPrefill Failed:"
                    << std::string(e.what());
         if (std::string(e.what()) == "ALLSPARK_MEMORY_ERROR" ||
             std::string(e.what()) == "ALLSPARK_CACHE_MEMORY_OUT") {

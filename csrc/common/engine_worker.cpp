@@ -168,11 +168,11 @@ AsStatus Worker::RunTextGenerationContinue() {
   AsStatus ret = model_->GenerateContinue();
   return ret;
 }
-AsStatus Worker::RunTextGenerationContext() {
-  DLOG(INFO) << "Worker::RunTextGenerationContext"
+AsStatus Worker::RunTextGenerationPrefill() {
+  DLOG(INFO) << "Worker::RunTextGenerationPrefill"
              << ", prefill rank_id: " << rank_ << std::endl;
   SetWorkerDeviceId(device_id_);
-  AsStatus ret = model_->GenerateContinueContext();
+  AsStatus ret = model_->GenerateContinuePrefill();
   return ret;
 }
 

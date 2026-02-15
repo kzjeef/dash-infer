@@ -437,11 +437,22 @@ AsStatus AsEngineImpl::BuildModelFromConfigStruct(AsModelConfig& model_config) {
     return AsStatus::ALLSPARK_PARAM_ERROR;
   }
 
-  if (engine_max_prefill_length_ != 0) {
-    LOG(ERROR) << "Current version DO NOT support chunk prefill";
-    return AsStatus::ALLSPARK_PARAM_ERROR;
+  // engine_max_prefill_length_ == 0 means no chunking (default):
+  // set to engine_max_length_ for backward compatibility.
+  // Non-zero value enables chunk prefill with that chunk size.
+  if (engine_max_prefill_length_ == 0) {
+    engine_max_prefill_length_ = engine_max_length_;
+  } else {
+    if (engine_max_prefill_length_ > engine_max_length_) {
+      LOG(WARNING) << "engine_max_prefill_length ("
+                   << engine_max_prefill_length_
+                   << ") > engine_max_length (" << engine_max_length_
+                   << "), clamping to engine_max_length";
+      engine_max_prefill_length_ = engine_max_length_;
+    }
+    LOG(INFO) << "Chunk prefill enabled: engine_max_prefill_length = "
+              << engine_max_prefill_length_;
   }
-  engine_max_prefill_length_ = engine_max_length_;
 
   std::shared_ptr<TransformerProto> model_ir =
       std::make_shared<TransformerProto>();

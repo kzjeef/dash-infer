@@ -55,7 +55,7 @@ class Worker {
   AsStatus ReleaseRequest(std::string request_id);
 
   AsStatus RunTextGenerationContinue();
-  AsStatus RunTextGenerationContext();
+  AsStatus RunTextGenerationPrefill();
   AsStatus AllocPrefillMemory(int64_t min_free_count, int& pres_frame);
   AsStatus AllocDecoderMemory(int pending_num, int64_t min_free_count,
                               int& pres_frame);

@@ -18,7 +18,7 @@
 | # | Feature | Target | Priority | Current State |
 |---|---------|--------|----------|---------------|
 | 1 | [CUDA Graph Full (decode)](#31-cuda-graph-full-decode) | T1 T2 | P0 | Piecewise only — attention runs eager |
-| 2 | [Chunked Prefill + Unified Scheduler](#32-chunked-prefill--unified-scheduler) | T1 T2 | P0 | Explicitly disabled |
+| 2 | [Chunked Prefill + Unified Scheduler](#32-chunked-prefill--unified-scheduler) | T1 T2 | P0 | **Pure prefill chunking implemented** (no unified scheduler yet) |
 | 3 | [DP Attention](#33-dp-attention) | T2 | P0 | Not implemented |
 | 4 | [Speculative Decoding (EAGLE)](#34-speculative-decoding-eagle) | T1 T2 | P0 | Not implemented |
 | 5 | [FP4 MoE Fused Kernel](#35-fp4-moe-fused-kernel) | T2 | P1 | No FP4; MoE kernel exists but no FP4 fusion |
@@ -126,7 +126,7 @@ persistent pinned-memory buffer allocated once during model initialization.
 
 #### Problem
 
-DashInfer explicitly disables chunked prefill (`as_engine.cpp:440`: `"Current version DO
+DashInfer previously disabled chunked prefill (`as_engine.cpp:440`: `"Current version DO
 NOT support chunk prefill"`). The scheduler uses separate `PrefillThread()` and
 `DecodeThread()` with a `PrefillDecodeSharedData` bridge.
 
@@ -134,6 +134,43 @@ Without chunked prefill:
 - A 32K-token prefill monopolizes the GPU for hundreds of ms.
 - All concurrent decode requests stall, causing inter-token latency spikes.
 - GPU utilization is suboptimal under mixed workloads.
+
+#### Implementation Status
+
+**Phase 1: Pure prefill chunking — IMPLEMENTED** (`eval_auto_reg` branch)
+
+Splits long prefills into multiple forward passes of bounded chunk size. Pure prefill
+chunking only — no mixed prefill+decode scheduling (PD separation handles that).
+
+**What was done:**
+- Renamed: `runDecoderContext()` → `runPrefill()`, `GenerateContinueContext()` →
+  `GenerateContinuePrefill()`, `RunTextGenerationContext()` → `RunTextGenerationPrefill()`
+- Enabled `engine_max_prefill_length` config in `as_engine.cpp` (removed error block)
+- Implemented `runPrefillChunked()` in `model.cpp` — the core chunking loop
+- KV cache spans allocated incrementally per chunk via `SpanAttnOp::Alloc`
+- Warmup naturally exercises chunked path (activation tensors sized for chunk_size)
+
+**How it works:**
+- `AsModelConfig::engine_max_prefill_length` controls chunk size (0 = disabled, default)
+- When `in_length > chunk_size`, `runPrefill()` dispatches to `runPrefillChunked()`
+- Each chunk: slice input_ids → embedding → decoder (attention writes KV incrementally)
+- Only the last chunk runs gen_graph (lm_head + sampling) and post_graph
+- SpanAttention's `prefix_len` mechanism handles chunk-to-chunk KV continuity
+
+**Memory impact** (example: chunk=8K, Qwen2.5-7B, 128K input):
+- Activations: ~75% reduction per layer (only chunk_size instead of full seq_len)
+- lm_head: ~94% reduction (only last chunk, not full sequence)
+- KV cache (span storage): same total, but allocated incrementally
+
+**Files modified:**
+- `csrc/core/model/model.h` — added `runPrefillChunked()` declaration, renames
+- `csrc/core/model/model.cpp` — `runPrefillChunked()` implementation, renames
+- `csrc/common/as_engine.h` — rename `RunTextGenerationPrefill()`
+- `csrc/common/as_engine.cpp` — enabled `engine_max_prefill_length` config
+- `csrc/common/as_engine_prefill.cpp` — renames
+- `csrc/common/engine_worker.h` / `.cpp` — renames
+
+**Phase 2: Unified Scheduler — NOT YET STARTED**
 
 #### Goal
 
@@ -148,12 +185,12 @@ Each iteration:
   3. Execute mixed batch as one forward pass
 ```
 
-#### Implementation Plan
+#### Remaining Plan (Phase 2)
 
 1. Merge prefill/decode into a single scheduling loop with a token budget.
-2. Implement prefill chunking: split context into `ceil(seq_len / chunk_size)` chunks.
-3. Preserve KV cache across chunks (already supported by SpanAttention).
-4. Handle attention mask correctly across chunk boundaries.
+2. ~~Implement prefill chunking~~ (**DONE** in Phase 1).
+3. ~~Preserve KV cache across chunks~~ (**DONE** — SpanAttention handles this).
+4. Handle mixed prefill+decode attention masks in a single forward pass.
 5. The final chunk's last position transitions to decode phase.
 6. Benchmark: ShareGPT workload with mixed short/long requests.
 

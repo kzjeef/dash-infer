@@ -513,7 +513,7 @@ AsStatus AsModel::buildGenContext(
   return AsStatus::ALLSPARK_SUCCESS;
 }
 
-AsStatus AsModel::runDecoderContext() {
+AsStatus AsModel::runPrefill() {
   util::Timer t_begin;
 
 #if PROFILE_CONTEXT_TIME_GPU
@@ -557,6 +557,18 @@ AsStatus AsModel::runDecoderContext() {
   }
   gen_ctx->only_decoder = true;
   gen_ctx->num_beams = 1;
+
+  // Determine if chunk prefill should be used.
+  // engine_max_prefill_length == engine_max_length means no chunking (default).
+  const int chunk_size = ctx_->GetModelMaxPrefillLength();
+  const bool use_chunk_prefill =
+      (chunk_size > 0 && chunk_size < static_cast<int>(in_length));
+
+  if (use_chunk_prefill) {
+    return runPrefillChunked(gen_ctx, gen_cfg, in_length, chunk_size);
+  }
+
+  // ========== Original non-chunked prefill path (unchanged) ==========
   gen_ctx->step = gen_ctx->prefix_len;
 
   // finish pre-graph first to avoid possibly troublesome set shape
@@ -772,6 +784,220 @@ AsStatus AsModel::runDecoderContext() {
   return AsStatus::ALLSPARK_SUCCESS;
 }
 
+// ========== Chunked prefill implementation ==========
+// Splits long prefills into multiple forward passes of bounded chunk size.
+// SpanAttention's incremental KV cache (via prefix_len) handles the
+// chunk-to-chunk KV continuity — chunk N's KV becomes the "prefix" for
+// chunk N+1, identical to how prefix cache works.
+//
+// Memory savings:
+//   - Activation tensors: proportional to chunk_size instead of full seq_len
+//   - lm_head: only runs on the last chunk
+//   - KV cache (span storage): same total, allocated incrementally per chunk
+AsStatus AsModel::runPrefillChunked(GenerateContext* gen_ctx,
+                                    const GenerateConfig& gen_cfg,
+                                    size_t total_in_length, int chunk_size) {
+  util::Timer t_begin;
+
+  const int original_prefix_len = gen_ctx->prefix_len;
+  auto original_input_ids = gen_ctx->request->interim.at("new_input_ids");
+  const int num_chunks =
+      (static_cast<int>(total_in_length) + chunk_size - 1) / chunk_size;
+
+  LOG(INFO) << "Chunk prefill: request=" << gen_ctx->request->request_id
+            << " total_in_length=" << total_in_length
+            << " chunk_size=" << chunk_size << " num_chunks=" << num_chunks
+            << " original_prefix_len=" << original_prefix_len;
+
+  for (int chunk_idx = 0; chunk_idx < num_chunks; chunk_idx++) {
+    const int chunk_start = chunk_idx * chunk_size;
+    const int chunk_end = std::min(chunk_start + chunk_size,
+                                   static_cast<int>(total_in_length));
+    const int current_chunk_len = chunk_end - chunk_start;
+    const bool is_last_chunk = (chunk_idx == num_chunks - 1);
+
+    DLOG(INFO) << "Chunk prefill [" << chunk_idx << "/" << num_chunks
+               << "]: range=[" << chunk_start << ", " << chunk_end
+               << ") len=" << current_chunk_len
+               << " is_last=" << is_last_chunk;
+
+    // --- 1. Create sliced input_ids for this chunk ---
+    auto chunk_input_ids = std::make_shared<AsTensor>(
+        "chunk_input_ids", original_input_ids->GetDeviceType(),
+        original_input_ids->GetDataType(), DataMode::DENSE,
+        Shape({1, current_chunk_len}));
+    {
+      const int64_t* src =
+          static_cast<const int64_t*>(original_input_ids->GetDataPtr()) +
+          chunk_start;
+      memcpy(chunk_input_ids->GetDataPtr(), src,
+             current_chunk_len * sizeof(int64_t));
+    }
+    gen_ctx->request->interim["new_input_ids"] = chunk_input_ids;
+
+    // Remove GPU copy from previous chunk so PreProcessIdOp creates a fresh one
+    gen_ctx->request->interim.erase("new_input_ids_gpu");
+
+    // --- 2. Update context state for this chunk ---
+    // gen_ctx->step tells attention ops where new tokens start in the KV cache.
+    // gen_ctx->prefix_len tells attention ops how many tokens are already cached.
+    // For chunk N: both equal original_prefix_len + chunk_start.
+    gen_ctx->step = original_prefix_len + chunk_start;
+    gen_ctx->prefix_len = original_prefix_len + chunk_start;
+
+    // Update attention mask shape to chunk size
+    tensors_["attention_mask"]->SetShape(Shape({1, current_chunk_len}));
+
+    // Reset rotary caches — positions change per chunk
+    runtime_ctx_->GetLayerCacheManager()->ResetCache("rotary_step");
+    runtime_ctx_->GetLayerCacheManager()->ResetCache("rotary_inv_freq");
+
+    // --- 3. Pre-graph: embedding for this chunk ---
+    for (auto& op : graph_ops_["pre_graph"]) {
+      AsStatus status = op->CallReshape(runtime_ctx_.get());
+      if (status != AsStatus::ALLSPARK_SUCCESS) {
+        LOG(ERROR) << "reshape failed in pre_graph (chunk " << chunk_idx << ")";
+        return ErrorProcess(status);
+      }
+    }
+    for (auto& op : graph_ops_["pre_graph"]) {
+      AsStatus status = op->CallForward(runtime_ctx_.get());
+      CHECK_CUDA_ERROR(op)
+      if (status != AsStatus::ALLSPARK_SUCCESS) {
+        LOG(ERROR) << "forward failed in pre_graph (chunk " << chunk_idx << ")";
+        return ErrorProcess(status);
+      }
+    }
+
+    // --- 4. Decoder: reshape + alloc KV spans + forward ---
+    for (auto& op : graph_ops_["decoder"]) {
+      AsStatus status = op->CallReshape(runtime_ctx_.get());
+      if (status != AsStatus::ALLSPARK_SUCCESS) {
+        LOG(ERROR) << "reshape failed in decoder (chunk " << chunk_idx << ")";
+        return ErrorProcess(status);
+      }
+    }
+
+    // Allocate KV cache spans for this chunk's tokens.
+    // SpanAttnOp::Alloc uses seq_len_ (chunk size) as the increment and
+    // gen_ctx->step as the current cached length. Spans accumulate across
+    // chunks — each chunk allocates only its portion.
+    {
+      TracerLog trace(ctx_->GetDeviceType(), "ChunkAlloc", 1);
+#if ENABLE_SPAN_ATTENTION
+      if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+        for (auto& op : graph_ops_["decoder"]) {
+          if (dynamic_cast<SpanAttnOp*>(op.get()) != nullptr ||
+              dynamic_cast<MLAAttnOp*>(op.get()) != nullptr) {
+            AsStatus status = op->CallAlloc(runtime_ctx_.get());
+            CHECK_CUDA_ERROR(op)
+            if (status != AsStatus::ALLSPARK_SUCCESS) {
+              LOG(ERROR) << "alloc failed in decoder (chunk " << chunk_idx
+                         << ")";
+              return ErrorProcess(status);
+            }
+          }
+        }
+      } else
+#endif  // ENABLE_SPAN_ATTENTION
+      {
+        for (auto& op : graph_ops_["decoder"]) {
+          AsStatus status = op->CallAlloc(runtime_ctx_.get());
+          CHECK_CUDA_ERROR(op)
+          if (status != AsStatus::ALLSPARK_SUCCESS) {
+            LOG(ERROR) << "alloc failed in decoder (chunk " << chunk_idx << ")";
+            return ErrorProcess(status);
+          }
+        }
+      }
+    }
+
+    // Decoder forward — attention writes KV for this chunk and attends to
+    // all previously cached tokens + this chunk.
+    {
+      TracerLog trace(ctx_->GetDeviceType(), "ChunkForward", 1);
+      for (auto& op : graph_ops_["decoder"]) {
+        AsStatus status = op->CallForward(runtime_ctx_.get());
+        CHECK_CUDA_ERROR(op)
+        if (status != AsStatus::ALLSPARK_SUCCESS) {
+          LOG(ERROR) << "forward failed in decoder (chunk " << chunk_idx << ")";
+          return ErrorProcess(status);
+        }
+      }
+    }
+
+    // --- 5. Gen-graph + post-graph: only on the last chunk ---
+    if (is_last_chunk) {
+      // in_length_bias: ensures step + in_length_bias == input_len (full
+      // original input length) so that update_id writes the first generated
+      // token at the correct position in generated_ids.
+      gen_ctx->in_length_bias = gen_ctx->input_len - gen_ctx->step;
+      gen_ctx->num_beams = gen_cfg.num_beams;
+
+      for (auto& op : graph_ops_["gen_graph"]) {
+        AsStatus status = op->CallReshape(runtime_ctx_.get());
+        if (status != AsStatus::ALLSPARK_SUCCESS) {
+          LOG(ERROR) << "reshape failed in gen_graph";
+          return ErrorProcess(status);
+        }
+      }
+      for (auto& op : graph_ops_["gen_graph"]) {
+        AsStatus status = op->CallForward(runtime_ctx_.get());
+        CHECK_CUDA_ERROR(op)
+        if (status != AsStatus::ALLSPARK_SUCCESS) {
+          LOG(ERROR) << "forward failed in gen_graph";
+          return ErrorProcess(status);
+        }
+      }
+
+      for (auto& op : graph_ops_["post_graph"]) {
+        AsStatus status = op->CallReshape(runtime_ctx_.get());
+        if (status != AsStatus::ALLSPARK_SUCCESS) {
+          LOG(ERROR) << "reshape failed in post_graph";
+          return ErrorProcess(status);
+        }
+        status = op->CallForward(runtime_ctx_.get());
+        CHECK_CUDA_ERROR(op)
+        if (status != AsStatus::ALLSPARK_SUCCESS) {
+          LOG(ERROR) << "forward failed in post_graph";
+          return ErrorProcess(status);
+        }
+      }
+    }
+  }  // end chunk loop
+
+  // --- 6. Restore state ---
+  gen_ctx->request->interim["new_input_ids"] = original_input_ids;
+  gen_ctx->prefix_len = original_prefix_len;
+  gen_ctx->in_length_bias = 0;
+  gen_ctx->step = static_cast<int>(total_in_length) + original_prefix_len;
+
+  DLOG(INFO) << "end run chunked context, uuid = "
+             << gen_ctx->request->request_id;
+
+  auto do_time_profile = EnvVarConfig::GetInt("ALLSPARK_TIME_LOG", 0);
+  if (do_time_profile) {
+    auto context_time_ms = t_begin.elapsed();
+    LOG(INFO) << "Chunked Context Time [TTFT](ms) " << context_time_ms
+              << " chunks=" << num_chunks << " chunk_size=" << chunk_size
+              << " total_in_length=" << total_in_length;
+  }
+
+#if PROFILE_CONTEXT_TIME_GPU
+  {
+    if (runtime_ctx_->GetGenCtxListSize() >= 10) {
+      auto cuda_ctx = dynamic_cast<const CUDAContext*>(ctx_);
+      if (cuda_ctx) {
+        cuda_ctx->Synchronize();
+        LOG(INFO) << "NSys Profiler Stop.";
+        cuda_ctx->NsysProfilerStop();
+      }
+    }
+  }
+#endif
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
 AsStatus AsModel::StartRequest(std::shared_ptr<Request> request) {
   DLOG(INFO) << "AsModel:StartRequest()" << std::endl;
 
@@ -861,9 +1087,9 @@ AsStatus AsModel::StartRequest(std::shared_ptr<Request> request) {
                << " lora_name " << lora_name
                << " exist: " << lora_manager_->IsLoraExists(lora_name)
                << std::endl;
-    runDecoderContext();
+    runPrefill();
   } catch (std::exception& e) {
-    LOG(ERROR) << "runDecoderContext() Failed: " << std::string(e.what())
+    LOG(ERROR) << "runPrefill() Failed: " << std::string(e.what())
                << ", "
                << "request_id = " << request->request_id;
     StopRequest(request->request_id);
@@ -1235,7 +1461,7 @@ AsStatus AsModel::AllocPrefillMemory(int64_t min_free_count, int& pres_frame) {
   return AsStatus::ALLSPARK_SUCCESS;
 }
 
-AsStatus AsModel::GenerateContinueContext() {
+AsStatus AsModel::GenerateContinuePrefill() {
   // maybe use if,each turn only run one context phase
   util::Timer t0;
 

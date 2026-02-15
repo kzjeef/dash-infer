@@ -73,7 +73,7 @@ class AsModel {
 
   virtual AsStatus GenerateContinue();
   virtual AsStatus GenerateContinueDecoder();
-  virtual AsStatus GenerateContinueContext();
+  virtual AsStatus GenerateContinuePrefill();
   virtual AsStatus AllocPrefillMemory(int64_t min_free_count, int& pres_frame);
   virtual AsStatus AllocDecoderMemory(int pending_num, int64_t min_free_count,
                                       int& pres_frame);
@@ -203,7 +203,10 @@ class AsModel {
   }
 
  protected:
-  AsStatus runDecoderContext();
+  AsStatus runPrefill();
+  AsStatus runPrefillChunked(GenerateContext* gen_ctx,
+                             const GenerateConfig& gen_cfg,
+                             size_t total_in_length, int chunk_size);
   AsStatus buildGenContext(GenerateContext* gen_ctx,
                            const std::shared_ptr<Request>& request) const;
 

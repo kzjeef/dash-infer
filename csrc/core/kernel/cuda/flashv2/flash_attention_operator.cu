@@ -149,7 +149,7 @@ void flashv2_set_runtime_param(flashv2_t& params, void* q_ptr, void* k_ptr,
 }
 
 void flashv2_dispatch(flashv2_t& params, cudaStream_t stream) {
-  run_mha_fwd(params, stream);
+  flash::run_mha_fwd(params, stream);
 }
 
 }  // namespace cuda

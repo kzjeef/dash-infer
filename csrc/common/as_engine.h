@@ -144,7 +144,7 @@ class AsEngineImpl final {
 #endif
 
   AsStatus RunTextGenerationContinue(const char* model_name);
-  AsStatus RunTextGenerationContext(const char* model_name);
+  AsStatus RunTextGenerationPrefill(const char* model_name);
 
   AsStatus StartRequestImpl(const char* model_name,
                             std::shared_ptr<RequestHandle> request_handle,
