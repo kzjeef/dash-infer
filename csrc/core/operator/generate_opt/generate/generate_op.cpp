@@ -608,27 +608,24 @@ AsStatus GenerateOp::RunSampleGPUPost(RuntimeContext* runtime_ctx) {
   return AsStatus::ALLSPARK_SUCCESS;
 }
 
+#ifdef ENABLE_CUDA
 AsStatus GenerateOp::EnqueueSampleD2H(RuntimeContext* runtime_ctx,
                                        cudaStream_t d2h_stream) {
-#ifdef ENABLE_CUDA
   if (ctx_->GetDeviceType() == DeviceType::CUDA) {
     fill_generated_ids_gpu_d2h(dec_ids_, dec_ids_host_, d2h_stream);
   }
-#endif
   return AsStatus::ALLSPARK_SUCCESS;
 }
+#endif
 
-AsStatus GenerateOp::CompleteSampleD2H(RuntimeContext* runtime_ctx) {
 #ifdef ENABLE_CUDA
+AsStatus GenerateOp::CompleteSampleD2H(RuntimeContext* runtime_ctx) {
   if (ctx_->GetDeviceType() == DeviceType::CUDA) {
-    // Use saved_ptrs_host_.size() NOT runtime_ctx->GetGenCtxListSize():
-    // batch may have grown since D2H was enqueued (new requests added).
     int batch_size = static_cast<int>(saved_ptrs_host_.size());
     fill_generated_ids_gpu_complete(saved_ptrs_host_, dec_ids_host_,
                                     batch_size);
     saved_ptrs_host_.clear();
   }
-#endif
 
   // UpdateProbs
   int batch_stride = ctx_->GetMaxTopLogprobs();
@@ -647,6 +644,7 @@ AsStatus GenerateOp::CompleteSampleD2H(RuntimeContext* runtime_ctx) {
 
   return AsStatus::ALLSPARK_SUCCESS;
 }
+#endif
 
 AsStatus GenerateOp::UpdateGraphParams(RuntimeContext* runtime_ctx) {
 #ifdef ENABLE_CUDA

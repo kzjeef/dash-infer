@@ -312,8 +312,7 @@ AsStatus AsEngineImpl::CreateDeviceContext(const std::string& compute_unit) {
 
   switch (device_type) {
     case DeviceType::CPU: {
-      LOG(ERROR) << "CPU inference is NOT support in this version.";
-      return AsStatus::ALLSPARK_PARAM_ERROR;
+      LOG(INFO) << "CPU inference mode enabled.";
       device_ctx_ = std::make_unique<CPUContext>();
       // device id is required by GPU like device,
       // cpu threads controler by numa control like cmd.

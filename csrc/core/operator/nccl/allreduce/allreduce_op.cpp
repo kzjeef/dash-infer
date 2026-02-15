@@ -41,7 +41,6 @@ AsStatus AllReduceOp::Init(const OperatorProto& op_proto,
       const CPUContext* cpu_ctx = static_cast<const CPUContext*>(ctx_);
       nranks_ = cpu_ctx->GetNranks();
       rank_id_ = cpu_ctx->GetRank();
-
       if (dtype != DataType::FLOAT32) {
         LOG(ERROR) << op_type_
                    << " not supported in DataType:" << DataType_Name(dtype)
@@ -50,8 +49,8 @@ AsStatus AllReduceOp::Init(const OperatorProto& op_proto,
       }
       mpi_dtype_ = GetMpiType(dtype);
 #else
-      LOG(ERROR) << "Multi-NUMA codes are not compiled" << std::endl;
-      return AsStatus::ALLSPARK_RUNTIME_ERROR;
+      nranks_ = 1;
+      rank_id_ = 0;
 #endif
       break;
     }
@@ -76,6 +75,11 @@ AsStatus AllReduceOp::Forward(RuntimeContext* runtime_ctx) {
   DeviceType backend = ctx_->GetDeviceType();
 
   if (nranks_ == 1) {
+    // Single-rank: just copy in to out if they differ
+    if (in != out) {
+      DataType dtype = tensor_map_->at(in_names_[0])->GetDataType();
+      memcpy(out, in, count_ * SizeofType(dtype));
+    }
     return AsStatus::ALLSPARK_SUCCESS;
   }
 

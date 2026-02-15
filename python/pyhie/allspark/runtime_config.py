@@ -5,7 +5,21 @@
 from ._allspark import AsModelConfig, AsCacheMode
 
 import os
+import logging
 from .engine import TargetDevice
+
+logger = logging.getLogger(__name__)
+
+
+def detect_cpu_bf16_support() -> bool:
+    """Detect if the current CPU supports BF16 instructions (avx512_bf16 or amx_bf16)."""
+    try:
+        with open("/proc/cpuinfo", "r") as f:
+            cpuinfo = f.read()
+        # Check for AVX-512 BF16 or AMX BF16 support
+        return "avx512_bf16" in cpuinfo or "amx_bf16" in cpuinfo
+    except (IOError, OSError):
+        return False
 
 
 def get_cache_mode_from_str(s):
@@ -120,6 +134,32 @@ class AsModelRuntimeConfigBuilder:
         self.new_runtime_cfg.num_threads = self.thread_num
         return self
 
+
+    def matmul_precision(self, precision: str) -> 'AsModelRuntimeConfigBuilder':
+        """Sets the matmul precision level.
+
+        Args:
+            precision: One of "highest" (FP32), "medium_bf16" (BF16), "medium_fp16" (FP16),
+                       or "auto" (auto-detect: use BF16 if CPU supports it, else FP32).
+
+        Raises:
+            ValueError: If precision is "medium_bf16" but CPU doesn't support BF16.
+        """
+        if precision == "auto":
+            if detect_cpu_bf16_support():
+                precision = "medium_bf16"
+                logger.info("CPU BF16 support detected (avx512_bf16/amx_bf16), using matmul_precision='medium_bf16'")
+            else:
+                precision = "highest"
+                logger.info("CPU does not support BF16, using matmul_precision='highest' (FP32)")
+        elif precision == "medium_bf16":
+            if not detect_cpu_bf16_support():
+                raise ValueError(
+                    "matmul_precision='medium_bf16' requested but CPU does not support BF16 instructions "
+                    "(avx512_bf16/amx_bf16). Use 'highest' for FP32 or 'auto' for auto-detection."
+                )
+        self.new_runtime_cfg.matmul_precision = precision
+        return self
 
     def max_length(self, length: int) -> 'AsModelRuntimeConfigBuilder':
         """Sets the maximum sequence length for the engine."""
