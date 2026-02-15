@@ -421,6 +421,12 @@ AsStatus AsEngineImpl::BuildModelFromConfigStruct(AsModelConfig& model_config) {
   device_ctx_->SetSchedulingStrategy(model_config.scheduling_strategy);
   if (model_config.num_threads != 0) {
     AS_CHECK_STATUS(this->SetNumThreads(model_config.num_threads));
+  } else if (device_ctx_->GetDeviceType() == DeviceType::CPU) {
+    // Auto-detect: use half of available CPUs (physical cores, not hyperthreads)
+    int auto_threads = std::max(1, (int)std::thread::hardware_concurrency() / 2);
+    LOG(INFO) << "CPU auto-detect thread count: " << auto_threads
+              << " (from " << std::thread::hardware_concurrency() << " logical CPUs)";
+    AS_CHECK_STATUS(this->SetNumThreads(auto_threads));
   }
   AS_CHECK_STATUS(this->SetMatmulPrecision(model_config.matmul_precision));
 

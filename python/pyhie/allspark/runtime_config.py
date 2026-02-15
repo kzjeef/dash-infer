@@ -16,10 +16,28 @@ def detect_cpu_bf16_support() -> bool:
     try:
         with open("/proc/cpuinfo", "r") as f:
             cpuinfo = f.read()
-        # Check for AVX-512 BF16 or AMX BF16 support
         return "avx512_bf16" in cpuinfo or "amx_bf16" in cpuinfo
     except (IOError, OSError):
         return False
+
+
+def auto_set_cpu_threads():
+    """Auto-set OMP_NUM_THREADS to physical core count if not already set.
+    This must be called before any OpenMP parallel region is created."""
+    if os.environ.get("OMP_NUM_THREADS"):
+        return  # User already set it
+    try:
+        # Count physical cores (not hyperthreads)
+        phys_cores = os.cpu_count() // 2 if os.cpu_count() else 1
+        phys_cores = max(1, phys_cores)
+        os.environ["OMP_NUM_THREADS"] = str(phys_cores)
+        logger.info(f"Auto-set OMP_NUM_THREADS={phys_cores} (from {os.cpu_count()} logical CPUs)")
+    except Exception:
+        pass
+
+
+# Auto-set threads on import (before any OMP is initialized)
+auto_set_cpu_threads()
 
 
 def get_cache_mode_from_str(s):
