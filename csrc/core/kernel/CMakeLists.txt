@@ -128,9 +128,9 @@ if (ENABLE_JSON_MODE)
 endif()
 
 if (ENABLE_MULTINUMA)
-  list(APPEND KERNEL_3RD_LIBS CONAN_PKG::openmpi)
+  list(APPEND KERNEL_3RD_LIBS MPI::MPI_CXX)
 endif()
-list(APPEND ALLSPARK_3RD_LIBS CONAN_PKG::zlib)
+list(APPEND ALLSPARK_3RD_LIBS ZLIB::ZLIB)
 
 set(ALLSPARK_PUBLIC_DEFINITIONS ${ALLSPARK_PUBLIC_DEFINITIONS})
 
@@ -145,7 +145,7 @@ target_compile_definitions(
     PRIVATE ${ALLSPARK_PUBLIC_DEFINITIONS}
     PUBLIC ${ALLSPARK_PUBLIC_DEFINITIONS})
 target_include_directories(allspark_kernel PUBLIC ${KERNEL_INC_DIR})
-target_link_libraries(allspark_kernel PRIVATE ${KERNEL_3RD_LIBS} CONAN_PKG::glog CONAN_PKG::protobuf CONAN_PKG::zlib)
+target_link_libraries(allspark_kernel PRIVATE ${KERNEL_3RD_LIBS} glog::glog protobuf::libprotobuf ZLIB::ZLIB)
 target_compile_definitions(allspark_kernel PUBLIC ${ALLSPARK_DEFINITION})
 add_dependencies(allspark_kernel protobuf_target)
 target_compile_options(allspark_kernel PUBLIC $<$<COMPILE_LANGUAGE:CXX>:${ALLSPARK_CXX_FLAGS}>)

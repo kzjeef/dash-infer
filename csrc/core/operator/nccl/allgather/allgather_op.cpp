@@ -113,7 +113,6 @@ AsStatus AllGatherOp::Init(const OperatorProto& op_proto,
       const CPUContext* cpu_ctx = static_cast<const CPUContext*>(ctx_);
       nranks_ = cpu_ctx->GetNranks();
       rank_id_ = cpu_ctx->GetRank();
-
       if (dtype != DataType::FLOAT32) {
         LOG(ERROR) << op_type_
                    << " not supported in DataType:" << DataType_Name(dtype)
@@ -121,8 +120,18 @@ AsStatus AllGatherOp::Init(const OperatorProto& op_proto,
         return AsStatus::ALLSPARK_RUNTIME_ERROR;
       }
 #else
-      LOG(ERROR) << "Multi-NUMA codes are not compiled" << std::endl;
-      return AsStatus::ALLSPARK_RUNTIME_ERROR;
+      // Single-rank CPU mode: use a simple memcpy launcher instead of
+      // mpi_allgather_launcher which requires ENABLE_MULTINUMA.
+      kernel_launcher = [](DataType dtype, void* out, void* in,
+                           void* /*tmp_data*/, int count, int /*batch_size*/,
+                           int /*hidden_size*/, int /*nranks*/,
+                           const DeviceContext* /*ctx*/) {
+        if (in != out) {
+          memcpy(out, in, count * SizeofType(dtype));
+        }
+      };
+      nranks_ = 1;
+      rank_id_ = 0;
 #endif
       break;
     }

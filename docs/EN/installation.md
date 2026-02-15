@@ -4,17 +4,16 @@
 
 OS: Linux
 
-Python: 3.8, 3.9, 3.10, 3.11
+Python: 3.10, 3.11, 3.12
 
 Tested compiler version:
 
-- gcc: 7.3.1, 11.4.0
-- arm compiler: 22.1, 24.04
+- gcc: 11.4.0
+- arm compiler: 24.04
 
 For multi-NUMA inference, `numactl`, `openmpi` are required:
 
 - for Ubuntu: `apt-get install numactl libopenmpi-dev`
-- for CentOS: `yum install numactl openmpi-devel openssh-clients -y`
 
 > For CPUs with multiple NUMA nodes, it is recommended to install the above dependencies even if you only want to run the program on one NUMA node, otherwise remote memory accesses may occur and performance is not guaranteed to be optimal.
 
@@ -55,66 +54,24 @@ for CentOS:
 
 It is recommended to use a pre-built docker image or refer to the dockerfile under `<path_to_dashinfer>/scripts/docker` to build your own docker environment.
 
-Pull official docker image:
+Pull official docker image or build from Dockerfile:
 
-- x86, ubuntu:
+- CUDA development (Ubuntu 24.04 + CUDA 12.6 + Python 3.12):
 
 ```shell
-# python 3.8
-docker pull registry-1.docker.io/dashinfer/dev-ubuntu-22.04-x86:v1
+docker pull docker.cnb.cool/thinksrc/dashinfer/dev-ubuntu-cuda:latest
 
-# python 3.10
-docker pull registry-1.docker.io/dashinfer/dev-ubuntu-22.04-x86:v1_py310
+# Or build from Dockerfile:
+docker build -f scripts/docker/dev_ubuntu_cuda.Dockerfile -t dashinfer/dev-ubuntu-cuda:latest .
 ```
 
-- x86, centos:
+- CPU-only development (Ubuntu 24.04 + Python 3.12):
 
 ```shell
-# python 3.8
-docker pull registry-1.docker.io/dashinfer/dev-centos7-x86:v1
+docker pull docker.cnb.cool/thinksrc/dashinfer/dev-x86-ubuntu:latest
 
-# python 3.10
-docker pull registry-1.docker.io/dashinfer/dev-centos7-x86:v1_py310
-```
-
-- arm, alinux:
-
-```shell
-# python 3.8
-docker pull registry-1.docker.io/dashinfer/dev-alinux-arm:v1
-
-# python 3.10
-docker pull registry-1.docker.io/dashinfer/dev-alinux-arm:v1_py310
-```
-
-- arm, centos:
-
-```shell
-# python 3.8
-docker pull registry-1.docker.io/dashinfer/dev-centos8-arm:v1
-
-# python 3.10
-docker pull registry-1.docker.io/dashinfer/dev-centos8-arm:v1_py310
-```
-
-Or build docker image from dockerfile:
-
-```shell
-# if use podman
-docker build -f <path_to_dockerfile> --format=docker 
-
-# if use docker
-docker build -f <path_to_dockerfile> .
-```
-
-The default python version is 3.8. If you want to build docker images with different python version, you can specify python version by `--build-arg PY_VER=3.10`. For example, python 3.10:
-
-```shell
-# if use podman
-docker build -f <path_to_dockerfile> --build-arg PY_VER=3.10 --format=docker 
-
-# if use docker
-docker build -f <path_to_dockerfile> --build-arg PY_VER=3.10 .
+# Or build from Dockerfile:
+docker build -f scripts/docker/dev_x86_ubuntu.Dockerfile -t dashinfer/dev-x86-ubuntu:latest .
 ```
 
 Create a container:

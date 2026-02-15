@@ -1,6 +1,27 @@
-set -x
+set -ex
 
 clean="OFF"
+
+# Ensure ninja is available (required by hiednn, flash-attention, span-attention)
+if ! command -v ninja &> /dev/null; then
+    echo "ERROR: ninja-build is required but not found."
+    echo "       Install with: apt install ninja-build  (or yum install ninja-build)"
+    exit 1
+fi
+
+# Ensure nvcc is on PATH (common CUDA toolkit locations)
+if ! command -v nvcc &> /dev/null; then
+    for cuda_dir in /usr/local/cuda /usr/local/cuda-12 /usr/local/cuda-11; do
+        if [ -x "${cuda_dir}/bin/nvcc" ]; then
+            export PATH="${cuda_dir}/bin:$PATH"
+            echo "Added ${cuda_dir}/bin to PATH"
+            break
+        fi
+    done
+    if ! command -v nvcc &> /dev/null; then
+        echo "WARNING: nvcc not found on PATH. CUDA build may fail."
+    fi
+fi
 
 # with_platform, to support cuda/x86/arm build
 with_platform="${AS_PLATFORM:-cuda}"
@@ -58,38 +79,44 @@ fi
 if [ ! -d "./${build_folder}" ] || [ "$force_conan" != "OFF" ] ; then
     mkdir -p ${build_folder} && cd ${build_folder}
 
-    conan profile new dashinfer_compiler_profile --detect --force
-    conanfile=../conan/conanfile.txt
+    # Conan 2.x: select profile and options
+    conan_profile="../conan/conanprofile.x86_64"
+    conan_options=""
 
     if [ "${enable_multinuma}" == "ON" ]; then
-      conanfile=../conan/conanfile_openmpi.txt
+      conan_options="${conan_options} -o enable_multinuma=True"
     fi
 
     if [ "${with_platform,,}" == "armclang" ]; then
-      conanfile=../conan/conanfile_arm.txt
-      if [ "${enable_multinuma}" == "ON" ]; then
-        conanfile=../conan/conanfile_openmpi_arm.txt
-      fi
-      cp -f ../conan/conanprofile_armclang.aarch64 ~/.conan/profiles/dashinfer_compiler_profile
-      cp -r ../conan/settings_arm.yml ~/.conan/settings.yml
+      conan_profile="../conan/conanprofile_armclang.aarch64"
+      conan_options="${conan_options} -o arm=True"
     fi
 
     if [ "$enable_glibcxx11_abi" == "ON" ]; then
-      conan profile update settings.compiler.libcxx=libstdc++11 dashinfer_compiler_profile
+      libcxx_setting="libstdc++11"
     else
-      conan profile update settings.compiler.libcxx=libstdc++ dashinfer_compiler_profile
+      libcxx_setting="libstdc++"
     fi
 
-    conan install ${conanfile} -pr dashinfer_compiler_profile -b missing -b protobuf -b gtest -b glog
+    conan install ../conan \
+      -pr:h ${conan_profile} \
+      -s compiler.libcxx=${libcxx_setting} \
+      -of . \
+      --build=missing \
+      --build=protobuf \
+      --build=gtest \
+      --build=glog \
+      ${conan_options}
     cd ../
 fi
 
 cd ${build_folder}
-source ./activate.sh
+source ./conanbuild.sh
 export PATH=`pwd`/bin:$PATH
 
 if [ "${with_platform,,}" == "cuda" ]; then
   cmake .. \
+      -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=${build_type} \
       -DBUILD_PACKAGE=${build_package} \
       -DCONFIG_ACCELERATOR_TYPE=CUDA \
@@ -110,6 +137,7 @@ if [ "${with_platform,,}" == "cuda" ]; then
       -DENABLE_MULTINUMA=OFF
 elif [ "${with_platform,,}" == "x86" ]; then
   cmake .. \
+      -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=${build_type} \
       -DBUILD_PACKAGE=${build_package} \
       -DCONFIG_ACCELERATOR_TYPE=NONE \
@@ -124,11 +152,11 @@ elif [ "${with_platform,,}" == "x86" ]; then
       -DENABLE_MULTINUMA=${enable_multinuma}
 elif [ "${with_platform,,}" == "armclang" ]; then
   cmake .. \
+      -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake \
       -DCMAKE_BUILD_TYPE=${build_type} \
       -DBUILD_PACKAGE=${build_package} \
       -DCONFIG_ACCELERATOR_TYPE=NONE \
       -DCONFIG_HOST_CPU_TYPE=ARM \
-      -DENABLE_BLADE_AUTH=${enable_blade_auth} \
       -DENABLE_GLIBCXX11_ABI=${enable_glibcxx11_abi} \
       -DBUILD_PYTHON=OFF \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
@@ -149,15 +177,10 @@ elif [ "${with_platform,,}" == "armclang" ]; then
 fi
 
 # do the make and package.
-# VERBOSE=1 make && make install
-make -j16 && make install
+make -j16
+make install
 
-
-if [ $? -eq 0 ]; then
-  if [ ${build_package} == "ON" ]; then
+if [ "${build_package}" == "ON" ]; then
   make package
-  fi
-else
-  exit $?
 fi
 

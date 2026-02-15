@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    generate_impl_gpu.hpp
  */
 
@@ -210,11 +211,11 @@ void gen_sample_init_gpu(void* sample_states, unsigned long long seed,
     cuda::SampleKernelInitLauncher(sample_states, seed, batch_size, gpu_stream);
 }
 
-AsStatus fill_generated_ids_gpu(RuntimeContext* runtime_ctx,
-                                std::shared_ptr<AsTensor>& dec_ids,
-                                std::shared_ptr<AsTensor>& gen_ids_ptr,
-                                int64_t* dec_ids_host,
-                                const CUDAContext* cuda_ctx, int rank_id) {
+// Phase 1: H2D gen_ids_ptr + CopyToVars kernel on main stream.
+// Returns ptrs_host vector needed by Phase 3.
+std::vector<int64_t*> fill_generated_ids_gpu_enqueue(
+    RuntimeContext* runtime_ctx, std::shared_ptr<AsTensor>& dec_ids,
+    std::shared_ptr<AsTensor>& gen_ids_ptr, const CUDAContext* cuda_ctx) {
   cudaStream_t stream = cuda_ctx->GetStream();
 
   int batch_size = 1;
@@ -255,14 +256,49 @@ AsStatus fill_generated_ids_gpu(RuntimeContext* runtime_ctx,
       static_cast<int64_t**>(gen_ids_ptr->GetDataPtr()),
       static_cast<const int64_t*>(dec_ids->GetDataPtr()), batch_size, stream);
 
-  // dec_ids -> generated_ids
+  return ptrs_host;
+}
+
+// Phase 2: D2H copy of dec_ids on a separate stream (no sync).
+void fill_generated_ids_gpu_d2h(std::shared_ptr<AsTensor>& dec_ids,
+                                int64_t* dec_ids_host,
+                                cudaStream_t d2h_stream) {
+  AS_CHECK_CUDA(cudaMemcpyAsync(dec_ids_host, dec_ids->GetDataPtr(),
+                                dec_ids->GetSizeInByte(),
+                                cudaMemcpyDeviceToHost, d2h_stream));
+}
+
+// Phase 3: CPU scatter dec_ids_host into per-request generated_ids (host).
+void fill_generated_ids_gpu_complete(const std::vector<int64_t*>& ptrs_host,
+                                     const int64_t* dec_ids_host,
+                                     int batch_size) {
+  cpu::CopyToVarsKernelLauncher(
+      const_cast<int64_t**>(ptrs_host.data()), dec_ids_host, batch_size);
+}
+
+// Original all-in-one function for backward compatibility (eager path).
+AsStatus fill_generated_ids_gpu(RuntimeContext* runtime_ctx,
+                                std::shared_ptr<AsTensor>& dec_ids,
+                                std::shared_ptr<AsTensor>& gen_ids_ptr,
+                                int64_t* dec_ids_host,
+                                const CUDAContext* cuda_ctx, int rank_id) {
+  cudaStream_t stream = cuda_ctx->GetStream();
+
+  auto ptrs_host =
+      fill_generated_ids_gpu_enqueue(runtime_ctx, dec_ids, gen_ids_ptr,
+                                     cuda_ctx);
+
+  // D2H on main stream + sync
   AS_CHECK_CUDA(cudaMemcpyAsync(dec_ids_host, dec_ids->GetDataPtr(),
                                 dec_ids->GetSizeInByte(),
                                 cudaMemcpyDeviceToHost, stream));
   AS_CHECK_CUDA(cudaStreamSynchronize(stream));
 
-  cpu::CopyToVarsKernelLauncher(
-      ptrs_host.data(), static_cast<const int64_t*>(dec_ids_host), batch_size);
+  int batch_size = 1;
+  if (!runtime_ctx->is_context) {
+    batch_size = runtime_ctx->GetGenCtxListSize();
+  }
+  fill_generated_ids_gpu_complete(ptrs_host, dec_ids_host, batch_size);
 
   return AsStatus::ALLSPARK_SUCCESS;
 }

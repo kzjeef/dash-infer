@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    dec_opt_embedding_op.h
  */
 
@@ -24,6 +25,7 @@ class DecOptEmbeddingOp : public AsOperator {
   // AsStatus Forward() override;
   AsStatus Reshape(RuntimeContext* runtime_ctx) override;
   AsStatus Forward(RuntimeContext* runtime_ctx) override;
+  bool IsGraphUnsafe() const override { return true; }
   AsStatus RunContext(RuntimeContext* runtime_ctx);
   AsStatus RunDecoder(RuntimeContext* runtime_ctx);
   AsStatus RunOneBatch(GenerateContext* gen_ctx, int current_batch);

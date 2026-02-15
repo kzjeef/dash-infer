@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    api.cpp
  */
 
@@ -74,6 +75,24 @@ SaStatus CreateHandle(SpanAttnHandle** handle, DataType dataType,
     *handle = new SpanAttnHandle(dataType, kvQuantMode, batchSize, nHeads,
                                  nGroups, headSize, spanLen, nSpansPerRequest,
                                  seqLen, deviceProp, false);
+    return SaStatus::SUCCESS;
+  });
+}
+
+SaStatus UpdateSeqLengths(SpanAttnHandle* handle, const int* seqLen,
+                          int count) {
+  if (handle == nullptr) {
+    LOG(ERROR) << "UpdateSeqLengths: handle must not be null" << std::endl;
+    return SaStatus::PARAM_ERROR;
+  }
+
+  if (seqLen == nullptr) {
+    LOG(ERROR) << "UpdateSeqLengths: seqLen must not be null" << std::endl;
+    return SaStatus::PARAM_ERROR;
+  }
+
+  return api_body([=]() -> SaStatus {
+    handle->UpdateSeqLengths(seqLen, count);
     return SaStatus::SUCCESS;
   });
 }

@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    operator.h
  */
 
@@ -55,6 +56,12 @@ class AsOperator {
   AsStatus CallForward(RuntimeContext* runtime_ctx);
   AsStatus CallReshape(RuntimeContext* runtime_ctx);
   AsStatus CallAlloc(RuntimeContext* runtime_ctx);
+
+  // CUDA Graph support
+  virtual AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) {
+    return AsStatus::ALLSPARK_SUCCESS;
+  }
+  virtual bool IsGraphUnsafe() const { return false; }
 
   void Synchronize();
   void PrintInformation();

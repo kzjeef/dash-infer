@@ -13,11 +13,16 @@
 
 </div>
 
+## 最新动态
+- [2026/02] 🔥 DashInfer v3.0 发布！主要新特性包括：CUDA Graph 加速 decode 阶段、DeepSeek V3（671B）支持及 Multi-Latent Attention (MLA)、FP8 (A8W8) 量化（Hopper GPU）、连续批处理 LoRA 优化，以及大规模 MoE 模型的 Expert Parallelism (EP) 支持。详情请参考[发布说明](https://dashinfer.readthedocs.io/en/latest/index.html#v3-0-0)。
+
+- [2024/12] DashInfer v2.0 发布，支持增强的 GPU（CUDA）能力，包括前缀缓存（GPU & CPU 交换）、引导解码、GQA 注意力优化、无锁 reactor 引擎，以及新增 VLM 模型（Qwen-VL）和 MoE 模型支持。
+
+- [2024/06] DashInfer v1.0 发布，支持 x86 & ARMv9 CPU 以及 CPU flash attention。
+
 # 简介
 
 DashInfer采用C++ Runtime 编写，提供C++ 和 Python语言接口。 DashInfer 具有生产级别的高性能表现， 支持多种CUDA架构， CPU架构。 DashInfer支持多种主流LLM推理技术连续批处理（Continuous Batching），权重量化， KV-Cache量化， Page Attention（自研SpanAttention Kernel），Guided Output， Prefix Caching。
-
-## DashInfer的主要特征
 
 ## 主要特性
 DashInfer 是一个高度优化的 LLM 推理引擎，具有以下核心特性：
@@ -26,11 +31,15 @@ DashInfer 是一个高度优化的 LLM 推理引擎，具有以下核心特性�
 - **高性能**: DashInfer 采用优化的内核提供高性能 LLM 服务，同时支持许多标准 LLM 推理技术，包括：
   - **连续批处理**: DashInfer 允许即时插入新请求，并支持流式输出。
   - **分页注意力机制**: 使用我们自研的分页注意力机制（我们称之为 *SpanAttention*），结合基于高效 GEMM 和 GEMV 实现的 int8 和 uint4 KV 缓存量化，能够实现注意力运算符的高效加速。
+  - **CUDA Graph**: DashInfer 支持 decode 阶段的 CUDA Graph 捕获，显著减少 kernel 启动开销，提升小批量/延迟敏感场景的吞吐量。
+  - **Multi-Latent Attention (MLA)**: DashInfer 支持 MLA 架构（DeepSeek V3 使用），通过压缩 KV Cache，相比标准多头注意力减少约 28 倍的每 token KV 缓存。
   - **前缀缓存**: DashInfer 支持高效的前缀缓存，用于加速标准 LLMs 和多模态 LMs（如 Qwen-VL），支持 GPU 和 CPU。
-  - **量化支持**: 使用 DashInfer 的 *InstantQuant*（IQ），无需微调即可实现权重量化加速，提高部署效率。准确率评估显示，IQ 几乎不影响模型准确率，详细信息请参见：:doc:`quant/weight_activate_quant`。
+  - **量化支持**: 使用 DashInfer 的 *InstantQuant*（IQ），无需微调即可实现权重量化加速，提高部署效率。DashInfer 还支持 Hopper GPU（SM90+）上的 FP8 (A8W8) 量化，进一步提升性能。
+  - **LoRA**: DashInfer 支持连续批处理的 LoRA 优化，支持运行时动态加载/卸载 LoRA 适配器，实现高效的多租户服务。
   - **异步接口**: 基于请求的异步接口提供对每个请求生成参数和请求状态的独立控制。
 - 支持的模型：
-  - **主流开源 LLMs**: DashInfer 支持主流开源 LLMs，包括 Qwen、LLaMA、ChatGLM 等，且支持加载 Huggingface 格式的模型。
+  - **主流开源 LLMs**: DashInfer 支持主流开源 LLMs，包括 Qwen（1/1.5/2/2.5/3）、LLaMA（2/3）、ChatGLM、DeepSeek V3 等，且支持加载 Huggingface 格式的模型。
+  - **MoE 模型**: DashInfer 支持混合专家模型，包括 Qwen2-MoE 和 DeepSeek V3（671B，256 专家），支持 Expert Parallelism (EP) 进行多 GPU 分布式推理。
   - **多模态大模型(VLMs)**: DashInfer 支持多模态语言模型（VLMs），包括 Qwen-VL、Qwen-AL 和 Qwen2-VL。
 - **OpenAI API 服务器**: DashInfer 可以轻松与 fastChat 配合使用，实现兼容 OpenAI 的 API 服务器。
 - **多编程语言 API**: 提供 C++ 和 Python 接口。通过标准的跨语言接口，可以将 C++ 接口扩展到 Java、Rust 等编程语言。
@@ -39,12 +48,12 @@ DashInfer 是一个高度优化的 LLM 推理引擎，具有以下核心特性�
 # 硬件支持和数据类型
 
 ## 硬件支持
-- **CUDA GPU**：支持 CUDA 版本从 11.4 到 12.9，并支持多种 CUDA 计算架构，例如 SM70 - SM90a（T4、3090、4090、V100、A100、A10、L20、H20、H100）。SM100（B200）为实验性支持。
+- **CUDA GPU**：支持 CUDA 版本从 11.4 到 12.9，并支持多种 CUDA 计算架构，例如 SM70 - SM100（T4、3090、4090、V100、A100、A10、L20、H20、H100、B200）。SM100（B200）为实验性支持。
 - **x86 CPU**：要求硬件至少需要支持AVX2指令集。对于第五代至强（Xeon）处理器（Emerald Rapids）、第四代至强（Xeon）处理器（Sapphire Rapids）等（对应于阿里云第8代ECS实例，如g8i），采用AMX矩阵指令加速计算。
 - **ARMv9 CPU**：要求硬件支持SVE指令集。支持如倚天（Yitian）710等ARMv9架构处理器（对应于阿里云第8代ECS实例，如g8y），采用SVE向量指令加速计算。
 
 ## 数据类型
-- **CUDA GPUs**: FP16, BF16, FP32, Int8(InstantQuant), Int4(InstantQuant)
+- **CUDA GPUs**: FP16, BF16, FP8, FP32, Int8(InstantQuant), Int4(InstantQuant)
 - **x86 CPU**：支持FP32、BF16。
 - **ARM Yitian710 CPU**：FP32、BF16、InstantQuant。
 
@@ -63,9 +72,26 @@ DashInfer 为 LLM 权重提供了多种量化技术，例如 int{8,4} 仅权重�
 - **每通道量化**: DashInfer 的量化技术至少采用了每通道（也称为每 Token）量化粒度，有些还提供了子通道量化粒度。一般而言，每通道量化由于实现简单且性能最佳，通常能满足大多数准确性需求。只有当每通道量化的准确性不足时，才应考虑子通道量化策略。
 - **子通道量化**: 与每通道量化相比，子通道量化是指将一个通道划分为 N 组，并在每组内计算量化参数。这种量化粒度通常能提供更好的准确性，但由于实现复杂度增加，带来了许多限制。例如，性能可能比每通道量化稍慢，并且由于计算公式限制，激活量化难以实现子通道量化（DashInfer的激活量化都是每通道量化）。
 
-# 依赖
-1. Python： DashInfer python package， 目前只依赖pytorch和huggingface(做safetensor模型权重加载），但是由于运行时转换得调用HF接口进行模型权重加载，所以各个模型可能有自己的依赖。
-2. C++: 目前C++ Package全部静态编译了第三方依赖库，并且做了符号隐藏，所以目前C++ Package 无任何第三方库的运行时依赖。
+# 软件依赖
+
+## 构建依赖
+
+DashInfer 使用 [Conan 2.x](https://conan.io/) 管理 C++ 第三方依赖。主要依赖包括：
+
+| 依赖 | 版本 |
+|---|---|
+| Conan | >= 2.0 |
+| protobuf | 3.18.3 |
+| gtest | 1.11.0 |
+| glog | 0.5.0 |
+| pybind11 | 2.13.6 |
+| zlib | 1.2.13 |
+
+> 注意：Conan 1.x 已不再支持，请升级到 Conan 2.x：`pip install "conan>=2.0"`
+
+## 运行时依赖
+1. **Python**： DashInfer Python 包依赖 PyTorch 和 Huggingface Transformers（用于 safetensors 模型权重加载），但由于运行时需要调用 HF 接口进行模型权重加载，各个模型可能有自己的额外依赖。
+2. **C++**: 目前 C++ 包全部静态编译了第三方依赖库，并且做了符号隐藏，所以目前 C++ 包无任何第三方库的运行时依赖。
 
 
 # 文档和示例代码
@@ -78,7 +104,7 @@ DashInfer 为 LLM 权重提供了多种量化技术，例如 int{8,4} 仅权重�
 
 1. API使用 [Python Quick Start](https://dashinfer.readthedocs.io/en/latest/get_started/quick_start_api_py_en.html)
 2. LLM OpenAI Server [Quick Start Guide for OpenAI API Server](https://dashinfer.readthedocs.io/en/latest/get_started/quick_start_api_server_en.html)
-3. VLM OpenAI Server [VLM Support)(https://dashinfer.readthedocs.io/en/latest/vlm/vlm_offline_inference_en.html)
+3. VLM OpenAI Server [VLM Support](https://dashinfer.readthedocs.io/en/latest/vlm/vlm_offline_inference_en.html)
 
 ### Feature介绍：
 
@@ -90,12 +116,12 @@ DashInfer 为 LLM 权重提供了多种量化技术，例如 int{8,4} 仅权重�
 
 1. [Development Guide](https://dashinfer.readthedocs.io/en/latest/devel/source_code_build_en.html#)
 2. [Build From Source](https://dashinfer.readthedocs.io/en/latest/devel/source_code_build_en.html#build-from-source-code)
-3. [OP Profling](https://dashinfer.readthedocs.io/en/latest/devel/source_code_build_en.html#profiling)
+3. [OP Profiling](https://dashinfer.readthedocs.io/en/latest/devel/source_code_build_en.html#profiling)
 4. [Environment Variable](https://dashinfer.readthedocs.io/en/latest/get_started/env_var_options_en.html)
  
 ##  代码示例
 
-在`<path_to_dashinfer>/examples`下提供了C++、python接口的调用示例，请参考`<path_to_dashinfer>/documents/CN`目录下的文档运行示例。
+在`<path_to_dashinfer>/examples`下提供了C++、python接口的调用示例，请参考`<path_to_dashinfer>/docs/CN`目录下的文档运行示例。
 
 - [所有Python示例文档](docs/CN/examples_python.md)
 - [C++示例文档](docs/CN/examples_cpp.md)
@@ -169,6 +195,49 @@ DashInfer 的高性能 MoE 算子基于 [这篇论文](https://arxiv.org/abs/250
   year = {2024}
 }
 ```
+
+# 路线图
+
+## 已完成
+- [x] GPU 支持
+- [x] 多模态模型支持
+- [x] Flash-Attention 加速
+- [x] 上下文长度扩展至 32k 以上
+- [x] 4-bit 量化支持
+- [x] GPTQ 微调模型支持
+- [x] MoE 架构支持
+- [x] 引导输出：JSON Mode
+- [x] Prefix Cache：GPU 前缀缓存与 CPU 交换
+- [x] 量化：CUDA FP8 A8W8 激活量化
+- [x] LoRA：连续批处理 LoRA 优化
+- [x] 引擎内 Context 阶段与 Generation 阶段并行
+- [x] 更高效的 GPU MoE 算子
+- [x] CUDA Graph：decode 阶段分段 CUDA Graph 捕获加速
+- [x] MLA：Multi-Latent Attention 支持（DeepSeek V3）
+- [x] Expert Parallelism (EP) 大规模 MoE 模型支持
+
+## 进行中 & 计划中
+
+### [性能优化](docs/EN/roadmap_performance.md)
+目标：在 dense 72B 模型（H100）和 DeepSeek V3.2（B200）上追平 vLLM/SGLang 吞吐。
+- [ ] Chunked Prefill + 统一调度器
+- [ ] CUDA Graph Full 捕获（decode 阶段）
+- [ ] 投机解码（EAGLE）
+- [ ] DP Attention（数据并行 Attention，用于 MoE + MLA）
+- [ ] FP4 MoE 融合算子（Blackwell B200）
+- [ ] NSA 算子融合（DeepSeek V3.2 Native Sparse Attention）
+
+### [RL 训练集成](docs/EN/roadmap_rl_integration.md)
+目标：使 DashInfer 成为 RLHF/GRPO/DPO 训练的推理后端（OpenRLHF、veRL、TRL）。
+- [ ] Prompt Logprobs（prefill 阶段 log probabilities）
+- [ ] 权重热更新（无需重启引擎）
+- [ ] Sleep/Wake 模式（训练时让出 GPU 显存）
+- [ ] 训练-推理同卡共存
+- [ ] Ray / 分布式调度框架集成
+
+### 其他
+- [ ] AMD (ROCm) 平台适配
+- [ ] [基础设施升级](docs/EN/roadmap_infra_upgrade.md)：Flash Attention 3/4 升级、CUTLASS 升级、Docker 镜像现代化、Conan 2.x、Python 3.10+ 默认
 
 # License
 

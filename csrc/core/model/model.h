@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    model.h
  */
 
@@ -21,6 +22,7 @@
 
 #ifdef ENABLE_CUDA
 #include <check_cuda.h>
+#include <cuda_runtime.h>
 #endif
 
 #include <memory>
@@ -240,6 +242,46 @@ class AsModel {
   PrefixCacheManager::Ptr prefix_cache_manager_;
   PrefixCacheCoordinator::Ptr prefix_cache_coordinator_;
   int tokens_per_cache_span_ = 0;
+#endif
+
+#ifdef ENABLE_CUDA
+  // Piecewise CUDA Graph support for decode phase.
+  // Captures graph-safe operator segments between graph-unsafe operators
+  // (attention, embedding). Unsafe ops run eagerly between graph replays.
+  struct CudaGraphSegment {
+    int start_idx;  // first op index in this segment (inclusive)
+    int end_idx;    // last op index in this segment (exclusive)
+    cudaGraphExec_t exec = nullptr;
+  };
+  struct CudaGraphPlan {
+    std::vector<CudaGraphSegment> segments;
+    // Indices of graph-unsafe ops that must run eagerly
+    std::vector<int> eager_op_indices;
+    // Gen graph: captures GenerateOp's GPU-only sampling kernels
+    // (process_logits + TopK/TopP/Sample + logprobs)
+    cudaGraphExec_t gen_graph_exec = nullptr;
+    bool gen_graph_captured = false;
+  };
+
+  void CudaGraphClear();
+  AsStatus CudaGraphBuildPlan(int batch_size);
+  AsStatus CudaGraphRunPiecewise(RuntimeContext* runtime_ctx);
+  static int CudaGraphBatchBucket(int batch_size);
+
+  bool cuda_graph_enabled_ = false;
+  // Map from batch-size bucket → piecewise execution plan
+  std::unordered_map<int, CudaGraphPlan> cuda_graph_plans_;
+
+  // Double-buffered D2H pipeline for decode
+  bool decode_pipeline_enabled_ = false;
+  cudaStream_t d2h_stream_ = nullptr;
+  cudaEvent_t d2h_done_event_ = nullptr;
+  cudaEvent_t compute_done_event_ = nullptr;
+  bool pending_d2h_ = false;
+  int pending_d2h_batch_size_ = 0;  // batch size when D2H was enqueued
+
+  void FlushPendingD2H();
+  void DestroyD2HResources();
 #endif
 
  private:

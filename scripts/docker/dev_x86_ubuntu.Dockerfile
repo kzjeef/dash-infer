@@ -1,54 +1,67 @@
-FROM ubuntu:22.04
+# DashInfer x86 CPU-only development environment
+# Ubuntu 24.04 + Python 3.10 + Conan 2.x
+#
+# Build:
+#   docker build -f scripts/docker/dev_x86_ubuntu.Dockerfile -t dashinfer/dev-x86-ubuntu:latest .
+# Run:
+#   docker run -it dashinfer/dev-x86-ubuntu:latest
 
-RUN apt-get update && \
-    apt-get install build-essential cmake git vim python3-dev libcurl4-openssl-dev wget bzip2 numactl git-lfs rpm pip curl -y
+FROM ubuntu:24.04
 
-ARG PY_VER=3.8
+ARG PY_VER=3.10
 
-RUN curl -LO https://repo.anaconda.com/miniconda/Miniconda3-py38_23.11.0-2-Linux-x86_64.sh \
-    && bash Miniconda3-py38_23.11.0-2-Linux-x86_64.sh -p /miniconda -b \
-    && rm -f Miniconda3-py38_23.11.0-2-Linux-x86_64.sh
-ENV PATH=/miniconda/bin:${PATH}
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
 
-##########################################################################
-# uncomment if want to use anaconda mirror
-##########################################################################
-# RUN echo -e "\
-# channels:\n\
-#   - defaults\n\
-# show_channel_urls: true\n\
-# default_channels:\n\
-#   - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main\n\
-#   - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/r\n\
-#   - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/msys2\n\
-# custom_channels:\n\
-#   conda-forge: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   msys2: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   bioconda: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   menpo: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   pytorch: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   pytorch-lts: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   simpleitk: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-#   deepmodeling: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud\n\
-# " > /root/.condarc
+# System packages + Python 3.10 from deadsnakes PPA
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update -y && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    ninja-build \
+    git \
+    git-lfs \
+    vim \
+    wget \
+    curl \
+    unzip \
+    ca-certificates \
+    libssl-dev \
+    libcurl4-openssl-dev \
+    python${PY_VER} \
+    python${PY_VER}-dev \
+    python${PY_VER}-venv \
+    patchelf \
+    numactl \
+    rpm \
+    bzip2 \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN conda clean -i && conda config --show channels && conda create -y --name ds_py python==${PY_VER} && conda update -n base conda
-SHELL ["conda", "run", "-n", "ds_py", "/bin/bash", "-c"]
-RUN echo "source activate ds_py" >> /root/.bashrc && source /root/.bashrc
+# Python virtual environment with Python 3.10
+RUN python${PY_VER} -m venv /opt/venv
+ENV PATH="/opt/venv/bin:${PATH}"
 
-# build tools
-RUN conda install -y pybind11
+# Python build & development tools
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir \
+        "conan>=2.0,<3" \
+        pybind11-global \
+        pytest \
+        "protobuf>=3.18,<4" \
+        "transformers>=4.40,<5" \
+        tokenizers \
+        accelerate \
+        scons \
+        pandas \
+        tabulate
 
-##########################################################################
-# uncomment if want to use pip mirror
-##########################################################################
-# RUN mkdir -p /root/.pip/
-# RUN echo -e "[global]\ntrusted-host=mirrors.aliyun.com\nindex-url = http://mirrors.aliyun.com/pypi/simple\n\n[install]\nuse-wheel=yes" > /root/.pip/pip.conf
+# PyTorch (CPU)
+RUN pip install --no-cache-dir torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cpu
 
-RUN pip3 install --upgrade pip && pip3 install -U setuptools
-
-# engine requirements
-RUN conda install -y pytorch-cpu -c pytorch
-RUN pip3 install transformers==4.41.0 protobuf==3.18.3 conan==1.60.0 pytest tokenizers scons wheel pandas tabulate
+# Initialize Conan 2.x default profile
+RUN conan profile detect --force
 
 WORKDIR /root/

@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    gemm_op_cpu.cpp
  */
 
@@ -7,13 +8,21 @@
 
 #include <core/kernel/kernel.h>
 #include <cpu/cpu_context.h>
+#include <cpu/cpu_common.h>
 #include <utility/datatype_dispatcher.h>
 
-#ifdef ENABLE_DNNL
-using dnnl::memory;
-using tag = memory::format_tag;
-#endif
 namespace allspark {
+
+// Fast f32 -> bf16 conversion with round-to-nearest-even
+static inline void f32_to_bf16(const float* src, uint16_t* dst, int64_t count) {
+  for (int64_t i = 0; i < count; i++) {
+    uint32_t bits;
+    memcpy(&bits, &src[i], 4);
+    uint32_t rounding = (bits >> 16) & 1;
+    bits += 0x7FFF + rounding;
+    dst[i] = (uint16_t)(bits >> 16);
+  }
+}
 
 AsStatus GemmOpCPU::Init(const OperatorProto& op_proto,
                          const DeviceContext& ctx, const TensorMap& weights_map,
@@ -27,155 +36,39 @@ AsStatus GemmOpCPU::InitV2(const OperatorProto& op_proto,
                            const TensorMap& weights_map,
                            TensorMap& weights_buffer, TensorMap* tensor_map,
                            RuntimeContext* runtime_ctx) {
-#ifdef ENABLE_DNNL
   AS_CHECK_STATUS(GemmOpBase::InitV2(op_proto, ctx, weights_map, weights_buffer,
                                      tensor_map, runtime_ctx));
 
-  auto eng = DNNLEngine::GetInstance().GetEngine();
-  dnnl_op_ctx_ = std::make_unique<DNNLOpContext>();
-  dnnl_op_ctx_->pr_fwd_.resize(1);
-  // onednn gemm may have extra inputs since introduced binary_op
-  dnnl_op_ctx_->ins_.resize(weights_.size() + 2);
-  dnnl_op_ctx_->outs_.resize(1);
-
-  // original weight, bias are always fp32
-  memory::data_type dt = memory::data_type::f32;
-  memory::dims w_stride =
-      transB_ ? memory::dims{1, ldb_} : memory::dims{ldb_, 1};
-  memory::desc w_desc({k_, n_}, dt, w_stride);
-  dnnl_op_ctx_->ins_[1] =
-      std::make_unique<memory>(w_desc, eng, weights_[0]->GetDataPtr());
-
-  dnnl_op_ctx_->attr_ = std::make_unique<dnnl::primitive_attr>();
-  dnnl::post_ops po;
-  if (weights_.size() == 2) {
-    memory::desc b_desc({1, n_}, dt, {n_, 1});
-    dnnl_op_ctx_->ins_[2] =
-        std::make_unique<memory>(b_desc, eng, weights_[1]->GetDataPtr());
+  // For BF16 mode: convert FP32 weights to BF16 once and cache.
+  // If weights are already BF16 (pre-stored), no conversion needed.
+  if (weight_data_type_ == DataType::BFLOAT16 &&
+      weights_[0]->GetDataType() != DataType::BFLOAT16) {
+    int64_t w_count = weights_[0]->GetShape().Count();
+    w_bf16_cache_.resize(w_count);
+    f32_to_bf16(static_cast<const float*>(weights_[0]->GetDataPtr()),
+                w_bf16_cache_.data(), w_count);
   }
 
-  if (activation_ != UNARYTYPE_UNDEFINED) {
-    auto& algo_map = DNNLOpContext::unary_algo_map_;
-    if (algo_map.find(activation_) == algo_map.end()) {
-      LOG(ERROR) << "Unsupported unary type:" << UnaryType_Name(activation_)
-                 << std::endl;
-      return AsStatus::ALLSPARK_PARAM_ERROR;
-    }
-    float alpha = 0.f;
-    float beta = 0.f;
-    if (activation_ == UnaryType::SILU) {
-      alpha = 1.f;
-    }
-    po.append_eltwise(algo_map[activation_], alpha, beta);
-  }
-  dnnl_op_ctx_->attr_->set_post_ops(po);
   return AsStatus::ALLSPARK_SUCCESS;
-#else
-  LOG(ERROR) << "GemmOpCPU requires DNNL support." << std::endl;
-  return AsStatus::ALLSPARK_RUNTIME_ERROR;
-#endif  // ENABLE_DNNL
 }
+
 AsStatus GemmOpCPU::Reshape(RuntimeContext* runtime_ctx) {
-#ifdef ENABLE_DNNL
   int yn = n_;
   AS_CHECK_STATUS(GemmOpBase::Reshape(yn));
 
-  const CPUContext* cpu_ctx = static_cast<const CPUContext*>(ctx_);
-  auto eng = DNNLEngine::GetInstance().GetEngine();
-  auto dt = weight_data_type_ == DataType::BFLOAT16 ? memory::data_type::bf16
-                                                    : memory::data_type::f32;
-  memory::desc x_desc({m_, k_}, dt, memory::dims{lda_, 1});
-  memory::desc y_desc({m_, n_}, memory::data_type::f32, memory::dims{n_, 1});
-  memory::desc w_desc({k_, n_}, dt, tag::any);
-
-  if (reshape_cnt >= 2) {
-    // Prevent repeated reorder operations
-    w_desc = dnnl_op_ctx_->ins_[1]->get_desc();
-  } else {
-    reshape_cnt++;
-  }
-
-  memory::desc b_desc;
-  if (weights_.size() == 2) {
-    b_desc = dnnl_op_ctx_->ins_[2]->get_desc();
-  }
-  if (binary_type_ != BINARYTYPE_UNDEFINED) {
-    // auto po = dnnl_op_ctx_->attr_->get_post_ops();
-    dnnl::post_ops po;
-    auto& algo_map = DNNLOpContext::binary_algo_map_;
-    if (algo_map.find(binary_type_) == algo_map.end()) {
-      LOG(ERROR) << "Unsupported binary type:" << BinaryType_Name(binary_type_)
-                 << std::endl;
-      return AsStatus::ALLSPARK_PARAM_ERROR;
+  // Pre-allocate BF16 input buffer for the current m_ dimension.
+  // This avoids malloc/free in every Forward call.
+  if (weight_data_type_ == DataType::BFLOAT16) {
+    int64_t in_count = m_ * k_;
+    if ((int64_t)in_bf16_buf_.size() < in_count) {
+      in_bf16_buf_.resize(in_count);
     }
-    auto binary_md = std::make_unique<dnnl::memory::desc>(
-        memory::dims{m_, n_}, memory::data_type::f32, memory::dims{n_, 1});
-    po.append_binary(algo_map[binary_type_], *binary_md);
-    dnnl_op_ctx_->attr_->set_post_ops(po);
-  }
-  dnnl::matmul::primitive_desc prim_desc;
-  if (activation_ != UNARYTYPE_UNDEFINED ||
-      binary_type_ != BINARYTYPE_UNDEFINED) {
-    prim_desc = dnnl::matmul::primitive_desc(eng, x_desc, w_desc, b_desc,
-                                             y_desc, *(dnnl_op_ctx_->attr_));
-  } else {
-    prim_desc =
-        dnnl::matmul::primitive_desc(eng, x_desc, w_desc, b_desc, y_desc);
   }
 
-  dnnl_op_ctx_->pr_fwd_[0] = std::make_unique<dnnl::matmul>(prim_desc);
-  dnnl_op_ctx_->ins_[0] =
-      std::make_unique<dnnl::memory>(prim_desc.src_desc(), eng);
-  dnnl_op_ctx_->outs_[0] =
-      std::make_unique<dnnl::memory>(prim_desc.dst_desc(), eng);
-  if (binary_type_ != BINARYTYPE_UNDEFINED) {
-    auto bin_idx = dnnl_op_ctx_->ins_.size() - 1;
-    dnnl_op_ctx_->ins_[bin_idx] =
-        std::make_unique<dnnl::memory>(prim_desc.dst_desc(), eng);
-  }
-  if (prim_desc.weights_desc() != dnnl_op_ctx_->ins_[1]->get_desc()) {
-    memory::desc wei_src_desc = dnnl_op_ctx_->ins_[1]->get_desc();
-    memory::desc wei_dst_desc = prim_desc.weights_desc();
-#if 1
-    Shape weight_shape = weights_[0]->GetShape();
-
-    int64_t num_elem = wei_dst_desc.get_size() / SizeofType(weight_data_type_);
-    auto weight_tmp = std::make_unique<AsTensor>(
-        weights_[0]->GetName(), weights_[0]->GetDeviceType(), weight_data_type_,
-        weights_[0]->GetDataMode(), Shape({num_elem}));
-    auto wei_src_mem = memory(wei_src_desc, eng, weights_[0]->GetDataPtr());
-    auto wei_dst_mem = memory(wei_dst_desc, eng, weight_tmp->GetDataPtr());
-
-    dnnl::reorder(wei_src_mem, wei_dst_mem)
-        .execute(cpu_ctx->GetStream(), wei_src_mem, wei_dst_mem);
-
-    weights_[0]->Free();
-    weights_[0]->SetDataType(weight_data_type_);
-    weights_[0]->SetShape(Shape({num_elem}));
-    TensorUtils::DeepCopyWholeAsync(*weights_[0], *weight_tmp, ctx_);
-    if (weights_[0]->GetSizeInByte() == wei_dst_desc.get_size())
-      weights_[0]->SetShape(std::move(weight_shape));
-    dnnl_op_ctx_->ins_[1] = std::make_unique<dnnl::memory>(
-        wei_dst_desc, eng, weights_[0]->GetDataPtr());
-#else
-    auto weight_tmp = std::make_unique<AsTensor>(
-        weights_[0]->GetName() + "_tmp", *weights_[0]);
-    auto wei_src_mem = memory(wei_src_desc, eng, weight_tmp->GetDataPtr());
-    dnnl_op_ctx_->ins_[1] = std::make_unique<dnnl::memory>(
-        wei_dst_desc, eng, weights_[0]->GetDataPtr());
-    dnnl::reorder(wei_src_mem, *dnnl_op_ctx_->ins_[1])
-        .execute(cpu_ctx->GetStream(), wei_src_mem, *dnnl_op_ctx_->ins_[1]);
-#endif
-  }
   return AsStatus::ALLSPARK_SUCCESS;
-#else
-  LOG(ERROR) << "GemmOpCPU requires DNNL support." << std::endl;
-  return AsStatus::ALLSPARK_RUNTIME_ERROR;
-#endif  // ENABLE_DNNL
 }
 
 AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
-#ifdef ENABLE_DNNL
   AsTensor* in_tensor = tensor_map_->at(in_names_[0]).get();
   void* in = in_tensor->GetDataPtr();
   void* out = tensor_map_->at(out_names_[0])->GetDataPtr();
@@ -183,49 +76,78 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
   void* bin_in = (in_names_.size() == 2)
                      ? tensor_map_->at(in_names_[1])->GetDataPtr()
                      : nullptr;
+
   if (is_split_k_) {
     in = (char*)in + k_ * rank_id_ * SizeofType(dtype_);
   }
-  const CPUContext* cpu_ctx = static_cast<const CPUContext*>(ctx_);
-  auto eng = DNNLEngine::GetInstance().GetEngine();
-  dnnl::memory& x_mem = *(dnnl_op_ctx_->ins_[0]);
-  dnnl::memory& w_mem = *(dnnl_op_ctx_->ins_[1]);
-  dnnl::memory& y_mem = *(dnnl_op_ctx_->outs_[0]);
-  memory::desc x_desc({m_, k_}, memory::data_type::f32, memory::dims{lda_, 1});
-  if (x_desc != x_mem.get_desc()) {
-    auto x_in_mem = memory(x_desc, eng, in);
-    dnnl::reorder(x_in_mem, x_mem)
-        .execute(cpu_ctx->GetStream(), x_in_mem, x_mem);
+
+  if (weight_data_type_ == DataType::BFLOAT16) {
+    // BF16 path: MKL cblas_gemm_bf16bf16f32 (AMX-accelerated)
+    int64_t in_count = m_ * k_;
+    f32_to_bf16(static_cast<const float*>(in), in_bf16_buf_.data(), in_count);
+
+    const MKL_BF16* w_bf16_ptr;
+    if (weights_[0]->GetDataType() == DataType::BFLOAT16) {
+      w_bf16_ptr = reinterpret_cast<const MKL_BF16*>(
+          weights_[0]->GetDataPtr());
+    } else {
+      w_bf16_ptr = reinterpret_cast<const MKL_BF16*>(w_bf16_cache_.data());
+    }
+
+    float* out_f = static_cast<float*>(out);
+    float beta = 0.0f;
+    if (bias) {
+      const float* b = static_cast<const float*>(bias);
+      for (int64_t i = 0; i < m_; i++)
+        memcpy(out_f + i * n_, b, n_ * sizeof(float));
+      beta = 1.0f;
+    }
+    if (bin_in) {
+      memcpy(out_f, bin_in, m_ * n_ * sizeof(float));
+      beta = 1.0f;
+    }
+
+    CBLAS_TRANSPOSE transB_flag = transB_ ? CblasTrans : CblasNoTrans;
+    cblas_gemm_bf16bf16f32(
+        CblasRowMajor, CblasNoTrans, transB_flag,
+        m_, n_, k_, alpha_,
+        reinterpret_cast<const MKL_BF16*>(in_bf16_buf_.data()), lda_,
+        w_bf16_ptr, ldb_,
+        beta, out_f, n_);
   } else {
-    x_mem.set_data_handle(in);
+    // FP32 path: MKL cblas_sgemm (faster than sgemv even for m=1 with many threads)
+    cpu::GemmWraper<float>(
+        static_cast<float*>(out),
+        static_cast<const float*>(in),
+        static_cast<const float*>(weights_[0]->GetDataPtr()),
+        static_cast<const float*>(bias),
+        m_, n_, k_,
+        false, transB_,
+        lda_, ldb_, n_,
+        alpha_, 0.0f,
+        static_cast<const float*>(bin_in));
   }
-  memory::desc y_desc({m_, n_}, memory::data_type::f32, memory::dims{n_, 1});
-  if (y_desc == y_mem.get_desc()) {
-    y_mem.set_data_handle(out);
+
+  // Post-op: fused activation
+  if (activation_ != UNARYTYPE_UNDEFINED) {
+    float* out_f = static_cast<float*>(out);
+    int64_t total = m_ * n_;
+    if (activation_ == UnaryType::SILU) {
+      for (int64_t i = 0; i < total; i++)
+        out_f[i] = out_f[i] / (1.0f + expf(-out_f[i]));
+    } else if (activation_ == UnaryType::RELU) {
+      for (int64_t i = 0; i < total; i++)
+        out_f[i] = out_f[i] > 0.0f ? out_f[i] : 0.0f;
+    } else if (activation_ == UnaryType::GELU_ERF) {
+      for (int64_t i = 0; i < total; i++)
+        out_f[i] = 0.5f * out_f[i] * (1.0f + erff(out_f[i] * 0.7071067811865475f));
+    } else if (activation_ == UnaryType::TANH) {
+      for (int64_t i = 0; i < total; i++)
+        out_f[i] = tanhf(out_f[i]);
+    }
   }
-  std::unordered_map<int, memory> args{
-      {DNNL_ARG_SRC, x_mem}, {DNNL_ARG_WEIGHTS, w_mem}, {DNNL_ARG_DST, y_mem}};
-  if (bias) {
-    dnnl::memory& b_mem = *(dnnl_op_ctx_->ins_[2]);
-    args.insert({DNNL_ARG_BIAS, b_mem});
-  }
-  if (binary_type_ != BINARYTYPE_UNDEFINED) {
-    dnnl::memory& bin_mem =
-        *(dnnl_op_ctx_->ins_[dnnl_op_ctx_->ins_.size() - 1]);
-    bin_mem.set_data_handle(bin_in);
-    args.insert({DNNL_ARG_ATTR_MULTIPLE_POST_OP(0) | DNNL_ARG_SRC_1, bin_mem});
-  }
-  dnnl_op_ctx_->pr_fwd_[0]->execute(cpu_ctx->GetStream(), args);
-  if (y_desc != y_mem.get_desc()) {
-    auto y_out_mem = memory(y_desc, eng, out);
-    dnnl::reorder(y_mem, y_out_mem)
-        .execute(cpu_ctx->GetStream(), y_mem, y_out_mem);
-  }
+
   return AsStatus::ALLSPARK_SUCCESS;
-#else
-  LOG(ERROR) << "GemmOpCPU requires DNNL support." << std::endl;
-  return AsStatus::ALLSPARK_RUNTIME_ERROR;
-#endif  // ENABLE_DNNL
 }
 
 }  // namespace allspark

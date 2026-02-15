@@ -147,11 +147,17 @@ python performance_test_qwen_v15.py --device_ids 0 1 # test multi-NUMA performan
 
 > 多NUMA CPU推理请参考[单NUMA/多NUMA 推理](examples_python.md#L33)章节中的内容，以达到最佳性能。
 
-# 2_evaluation
+# 精度评估
 
-`<path_to_dashinfer>/examples/python/2_evaluation`目录下的代码来自[QwenLM/Qwen](https://github.com/QwenLM/Qwen/tree/main/eval)。原始代码中采用transformers推理，本仓库中的精度测试代码将推理部分用DashInfer替代。
+## 新版：基于 lm-evaluation-harness 的回归测试
 
-精度测试请参考2_evaluation目录下的[EVALUATION.md](../../examples/python/2_evaluation/EVALUATION.md)进行。
+推荐使用 `tests/eval/` 下基于 `lm-evaluation-harness` 的适配器进行精度评估，支持标准 benchmark（MMLU、GSM8K、HellaSwag 等）及自动化回归检测。详见 [tests/eval/README.md](../../tests/eval/README.md)。
+
+## 旧版：基于 Qwen 的评估脚本
+
+旧版评估脚本（源自 [QwenLM/Qwen](https://github.com/QwenLM/Qwen/tree/main/eval)）已迁移至 `tests/eval/legacy/`。这些脚本使用旧版 `EngineHelper` API，且硬编码了 Qwen-7B-Chat。
+
+旧版精度测试请参考 [EVALUATION.md](../../tests/eval/legacy/cpu/EVALUATION.md)。
 
 # 3_gradio
 

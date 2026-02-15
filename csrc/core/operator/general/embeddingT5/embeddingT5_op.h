@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    embeddingT5_op.h
  */
 
@@ -18,6 +19,10 @@ class EmbeddingT5Op : public AsOperator {
                 const TensorMap& weights_map, TensorMap* tensor_map);
   AsStatus Reshape(RuntimeContext* runtime_ctx) override;
   AsStatus Forward(RuntimeContext* runtime_ctx) override;
+  AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) override;
+  // EmbeddingT5Op uses stack-allocated host buffer for H2D in Forward().
+  // The captured H2D replays with stale stack address. Must run eagerly.
+  bool IsGraphUnsafe() const override { return true; }
 
  private:
   int hidden_size_;

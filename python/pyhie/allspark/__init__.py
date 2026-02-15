@@ -2,6 +2,14 @@
  Copyright (c) Alibaba, Inc. and its affiliates.
  @file    __init__.py
 '''
+# Auto-set OMP thread count BEFORE any OpenMP runtime is initialized.
+# Must happen before importing _allspark (C++ shared library with OMP).
+import os as _os
+if not _os.environ.get("OMP_NUM_THREADS"):
+    _ncpu = _os.cpu_count()
+    if _ncpu and _ncpu > 1:
+        _os.environ["OMP_NUM_THREADS"] = str(_ncpu // 2)
+
 from .engine import Engine
 from .quant.quantization_config_gptq import GPTQSettings
 from .quant.quantization_config_iq import IQSettings

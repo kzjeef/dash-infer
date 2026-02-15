@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    topp.cuh
  */
 
@@ -38,7 +39,11 @@ void TopPSoftmaxGetWorkspaceSize(size_t* sizeInBytes, int batch_size,
   size_t softmaxWsBytes(0);
   StridedSoftmaxGetWorkspaceSize<T>(&softmaxWsBytes, batch_size, length);
 
-  *sizeInBytes = std::max(sortWsBytes, softmaxWsBytes);
+  // CUB inclusive scan (prefix sum) workspace
+  size_t scanWsBytes(0);
+  topp::GetCubScanWorkspaceSize<T>(&scanWsBytes, length);
+
+  *sizeInBytes = std::max({sortWsBytes, softmaxWsBytes, scanWsBytes});
   return;
 }
 
@@ -71,8 +76,8 @@ void TopPSoftmaxLauncher(int* topp_count, T* topp_probs, int* topp_indices,
                          hiednnCudaHandle_t handle, cudaStream_t stream) {
   constexpr bool SORT_ASCEND = false;
 
-  // clear previous errors
-  AS_CHECK_CUDA_LAST_ERROR();
+  // clear previous errors (graph-safe: may be called during CUDA graph capture)
+  AS_CHECK_CUDA_LAST_ERROR_GRAPH_SAFE();
 
   if (workspace == nullptr) {
     throw std::runtime_error(
@@ -119,9 +124,10 @@ void TopPSoftmaxLauncher(int* topp_count, T* topp_probs, int* topp_indices,
                          length, stream);
   CUDA_KERNEL_TOPP_DBG_SYNC(stream);
 
-  //! NOTE: rely on in-place prefix sum
-  topp::HiednnPrefixSum(sortedAllProbBuf, sortedAllProbBuf, length, batch_size,
-                        handle, stream);
+  //! NOTE: rely on in-place prefix sum (CUB-based, graph-capture safe)
+  topp::CubBatchedInclusiveSum(sortedAllProbBuf, sortedAllProbBuf, length,
+                               batch_size, workspace, ws_size_in_bytes,
+                               stream);
   CUDA_KERNEL_TOPP_DBG_SYNC(stream);
 
   // determine top-p values for each task

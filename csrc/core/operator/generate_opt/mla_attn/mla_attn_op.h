@@ -69,6 +69,7 @@ class MLAAttnOp : public AsOperator {
   AsStatus Reshape(RuntimeContext* runtime_ctx) override final;
   AsStatus Forward(RuntimeContext* runtime_ctx) override final;
   AsStatus Alloc(RuntimeContext* runtime_ctx) override final;
+  bool IsGraphUnsafe() const override { return true; }
 
  protected:
   virtual AsStatus deviceInit() = 0;

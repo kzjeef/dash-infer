@@ -1,0 +1,14 @@
+# Requirements for DashInfer accuracy evaluation
+# Install: pip install -r requirements.txt
+
+# lm-evaluation-harness (EleutherAI)
+lm_eval>=0.4.0
+
+# Required by lm_eval for various tasks
+datasets
+sacrebleu
+rouge_score
+pybind11
+
+# DashInfer itself (install from wheel or source)
+# dashinfer

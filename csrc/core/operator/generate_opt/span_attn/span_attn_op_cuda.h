@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    span_attn_op_cuda.h
  */
 #pragma once
@@ -20,7 +21,9 @@ class SpanAttnOpCUDA : public SpanAttnOp {
   explicit SpanAttnOpCUDA(const std::string& op_type = "")
       : SpanAttnOp(op_type) {}
 
-  virtual ~SpanAttnOpCUDA() = default;
+  virtual ~SpanAttnOpCUDA();
+
+  AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) override;
 
  protected:
   /* for Init */
@@ -69,6 +72,10 @@ class SpanAttnOpCUDA : public SpanAttnOp {
   std::unique_ptr<AsTensor> v_span_array_tensor_device_;
 
   std::unique_ptr<AsTensor> host_workspace_;
+
+  // Cached span-attention handle for CUDA graph support
+  span::SpanAttnHandle_t cached_decoder_handle_ = nullptr;
+  int cached_decoder_batch_ = 0;
 };
 
 }  // namespace allspark

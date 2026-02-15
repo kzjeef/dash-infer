@@ -6,7 +6,7 @@ if(ENABLE_DNNL)
 else()
   set(_TEST_DNNL_LIB "")
 endif()
-target_link_libraries(test_as_common allspark_framework CONAN_PKG::gtest CONAN_PKG::glog CONAN_PKG::zlib ${_TEST_DNNL_LIB} ${CUDA_3RD_PARTY_LIBS} ${THREAD_LIB})
+target_link_libraries(test_as_common allspark_framework GTest::gtest glog::glog ZLIB::ZLIB ${_TEST_DNNL_LIB} ${CUDA_3RD_PARTY_LIBS} ${THREAD_LIB})
 set_target_properties(test_as_common PROPERTIES CXX_STANDARD ${CXX_STD})
 
 if (MEM_CHECK)
@@ -45,7 +45,7 @@ list(APPEND INTERFACE_TEST_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/test_common.cpp)
 
 add_executable(cpp_interface_test ${INTERFACE_TEST_SRCS})
 target_compile_definitions(cpp_interface_test PUBLIC ${ALLSPARK_DEFINITION})
-target_link_libraries(cpp_interface_test test_as_common CONAN_PKG::protobuf CONAN_PKG::zlib)
+target_link_libraries(cpp_interface_test test_as_common protobuf::libprotobuf ZLIB::ZLIB)
 
 # operator test
 file(GLOB_RECURSE OPERATOR_TEST_CPU_SRCS
@@ -59,7 +59,7 @@ if(ENABLE_CUDA)
   list(APPEND OPERATOR_TEST_SRCS ${OPERATOR_TEST_CUDA_SRCS})
 endif()
 add_executable(cpp_operator_test ${OPERATOR_TEST_SRCS})
-target_link_libraries(cpp_operator_test test_as_common CONAN_PKG::protobuf CONAN_PKG::zlib)
+target_link_libraries(cpp_operator_test test_as_common protobuf::libprotobuf ZLIB::ZLIB)
 target_compile_definitions(cpp_operator_test PUBLIC ${ALLSPARK_DEFINITION})
 target_compile_options(cpp_operator_test PUBLIC $<$<COMPILE_LANGUAGE:CXX>:${ALLSPARK_CXX_FLAGS}>)
 
@@ -70,7 +70,7 @@ if(ENABLE_CUDA)
   list(APPEND KERNEL_TEST_SRCS ${KERNEL_TEST_CUDA_SRCS})
 add_executable(cpp_kernel_test ${KERNEL_TEST_SRCS})
 target_include_directories(cpp_kernel_test PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/kernel/cuda/)
-target_link_libraries(cpp_kernel_test test_as_common CONAN_PKG::protobuf CONAN_PKG::zlib allspark_kernel)
+target_link_libraries(cpp_kernel_test test_as_common protobuf::libprotobuf ZLIB::ZLIB allspark_kernel)
 if(ENABLE_SPAN_ATTENTION)
   target_compile_definitions(cpp_kernel_test PRIVATE ENABLE_SPAN_ATTENTION=1)
 endif()
@@ -93,7 +93,7 @@ endif()
 add_executable(cpp_model_test ${MODEL_TEST_SRCS})
 
 
-target_link_libraries(cpp_model_test test_as_common CONAN_PKG::protobuf CONAN_PKG::zlib)
+target_link_libraries(cpp_model_test test_as_common protobuf::libprotobuf ZLIB::ZLIB)
 target_compile_definitions(cpp_model_test PUBLIC ${ALLSPARK_DEFINITION})
 
 

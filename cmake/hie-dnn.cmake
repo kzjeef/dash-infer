@@ -40,6 +40,12 @@ message(STATUS "HIEDNN_LIBRARY_PATH: ${HIEDNN_LIBRARY_PATH}")
   set(HIEDNN_SOURCE_DIR ${PROJECT_SOURCE_DIR}/HIE-DNN)
 message(STATUS "Build HIE-DNN in: ${HIEDNN_SOURCE_DIR}")
 
+# Ensure the ExternalProject build directory exists.
+# After a partial clean the stamp file may claim mkdir is done while the
+# directory is actually missing, which makes the configure step fail with
+# "can't cd to .../project_hiednn-build".
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/HIE-DNN/src/project_hiednn-build)
+
 include(ExternalProject)
 
 ExternalProject_Add(

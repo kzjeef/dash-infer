@@ -33,9 +33,9 @@ CUDA
 Conan
 ,,,,,
 
- + **conan**:  C++ package management tools, can be installed by : ``pip install conan==1.60.0``, only 1.60.0 is supported.
+ + **conan**:  C++ package management tools (version 2.x required), can be installed by : ``pip install "conan>=2.0,<3"``.
 
- .. note:: if there is any package-not-found issue, please make sure your conan center is available. Reset it with this command: `conan remote add conancenter https://center.conan.io`
+ .. note:: Conan 2.x is required. After installing, run ``conan profile detect --force`` to initialize the default profile. If there is any package-not-found issue, please make sure your conan center is available. Reset it with: ``conan remote add conancenter https://center.conan.io``
 
 
 Leak check tool
@@ -70,19 +70,19 @@ For multi-NUMA inference, ``numactl``, ``openmpi`` are required:
 Development Docker
 ==================
 
-We have build some Docker image for easier development setup.
+We provide Docker images for easier development setup. All images use Ubuntu 24.04 + Python 3.12.
 
-- CUDA 12.4
+- CUDA 12.6 (GPU development)
 
 .. code-block:: shell
 
-  docker run -d --name="dashinfer-dev-cu124-${USER}" \
+  docker run -d --name="dashinfer-dev-cuda-${USER}" \
     --shm-size=8g --gpus all \
     --network=host \
     -v $(pwd):/root/workspace/DashInfer \
     -w /root/workspace \
-    -it registry-1.docker.io/dashinfer/dev-centos7-cu124
-  docker exec -it "dashinfer-dev-cu124-${USER}" /bin/bash
+    -it docker.cnb.cool/thinksrc/dashinfer/dev-ubuntu-cuda:latest
+  docker exec -it "dashinfer-dev-cuda-${USER}" /bin/bash
 
 - CPU-only (Linux x86 server)
 
@@ -92,19 +92,18 @@ We have build some Docker image for easier development setup.
     --network=host \
     -v $(pwd):/root/workspace/DashInfer \
     -w /root/workspace \
-    -it registry-1.docker.io/dashinfer/dev-centos7-x86
+    -it docker.cnb.cool/thinksrc/dashinfer/dev-x86-ubuntu:latest
   docker exec -it "dashinfer-dev-${USER}" /bin/bash
 
-- CPU-only (Linux ARM server)
+Or build from Dockerfile:
 
 .. code-block:: shell
 
-  docker run -d --name="dashinfer-dev-${USER}" \
-    --network=host \
-    -v $(pwd):/root/workspace/DashInfer \
-    -w /root/workspace \
-    -it registry-1.docker.io/dashinfer/dev-centos8-arm
-  docker exec -it "dashinfer-dev-${USER}" /bin/bash
+  # CUDA development
+  docker build -f scripts/docker/dev_ubuntu_cuda.Dockerfile -t dashinfer/dev-ubuntu-cuda:latest .
+
+  # CPU-only development
+  docker build -f scripts/docker/dev_x86_ubuntu.Dockerfile -t dashinfer/dev-x86-ubuntu:latest .
 
 .. note:: When creating a container for multi-NUMA inference, ``--cap-add SYS_NICE --cap-add SYS_PTRACE --ipc=host`` arguments are required, because components such as numactl and openmpi need the appropriate permissions to run. If you only need to use the single NUMA API, you may not grant this permission.
 

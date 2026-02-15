@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    cuda_kernel.h
  */
 
@@ -315,6 +316,15 @@ void RotaryOptEmbedding(T* output, T* input, float* inv_freq, int* batch_offset,
                         int* step_list, int stride, int xlogn, int* positions,
                         int mrope_size, int* mrope_section,
                         cudaStream_t cu_stream);
+template <typename T>
+void RotaryOptEmbeddingQKV(
+    T* q_out, const T* q_in, int num_heads_q,
+    T* k_out, const T* k_in, int num_heads_k,
+    T* v_out, const T* v_in, int num_heads_v,
+    float* inv_freq, int* batch_offset,
+    int batch, int seq_len, int size_per_head,
+    int* step_list, int qkv_stride, int xlogn,
+    cudaStream_t cu_stream);
 template <typename T>
 void Chunk(T* output, T* input, int batch, int seq_len, int hidden_size,
            int chunk_split, cudaStream_t cu_stream);

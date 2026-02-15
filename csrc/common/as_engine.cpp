@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    as_engine.cpp
  */
 
@@ -311,8 +312,7 @@ AsStatus AsEngineImpl::CreateDeviceContext(const std::string& compute_unit) {
 
   switch (device_type) {
     case DeviceType::CPU: {
-      LOG(ERROR) << "CPU inference is NOT support in this version.";
-      return AsStatus::ALLSPARK_PARAM_ERROR;
+      LOG(INFO) << "CPU inference mode enabled.";
       device_ctx_ = std::make_unique<CPUContext>();
       // device id is required by GPU like device,
       // cpu threads controler by numa control like cmd.
@@ -421,6 +421,12 @@ AsStatus AsEngineImpl::BuildModelFromConfigStruct(AsModelConfig& model_config) {
   device_ctx_->SetSchedulingStrategy(model_config.scheduling_strategy);
   if (model_config.num_threads != 0) {
     AS_CHECK_STATUS(this->SetNumThreads(model_config.num_threads));
+  } else if (device_ctx_->GetDeviceType() == DeviceType::CPU) {
+    // Auto-detect: use half of available CPUs (physical cores, not hyperthreads)
+    int auto_threads = std::max(1, (int)std::thread::hardware_concurrency() / 2);
+    LOG(INFO) << "CPU auto-detect thread count: " << auto_threads
+              << " (from " << std::thread::hardware_concurrency() << " logical CPUs)";
+    AS_CHECK_STATUS(this->SetNumThreads(auto_threads));
   }
   AS_CHECK_STATUS(this->SetMatmulPrecision(model_config.matmul_precision));
 
@@ -1260,6 +1266,17 @@ AsStatus AsEngineImpl::WarmupModelInternal_(
 AsStatus AsEngineImpl::WarmupModel(const char* model_name) {
   if (EnvVarConfig::GetInt("ALLSPARK_DISABLE_WARMUP", 0) == 1) {
     return AsStatus::ALLSPARK_SUCCESS;
+  }
+
+  // CPU does not need warmup: no GPU memory pre-allocation, no CUDA context
+  // init, and oneDNN primitives are JIT-compiled on first real request.
+  // Skipping saves ~46s for a 7B FP32 model.
+  if (device_ctx_->GetDeviceType() == DeviceType::CPU) {
+    LOG(INFO) << "CPU device detected, skipping warmup (no GPU memory to "
+                 "pre-allocate). Set ALLSPARK_FORCE_WARMUP=1 to override.";
+    if (EnvVarConfig::GetInt("ALLSPARK_FORCE_WARMUP", 0) != 1) {
+      return AsStatus::ALLSPARK_SUCCESS;
+    }
   }
 
   // generate and load fake loras upto limit

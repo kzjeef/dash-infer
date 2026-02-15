@@ -1,5 +1,6 @@
 '''
  Copyright (c) Alibaba, Inc. and its affiliates.
+ Copyright (c) 2025-2026 DashInfer Team.
  @file    model_config.py
 '''
 from transformers import Qwen2Config, Qwen2MoeConfig, LlamaConfig
@@ -18,6 +19,15 @@ def torch_dtype_to_as_dtype(in_dtype: torch.dtype):
         return "float32"
     else:
         raise ValueError(f"not support dtype: {in_dtype}")
+
+
+def _get_rope_theta(hf_config, default=10000.0):
+    """Get rope_theta, compatible with transformers >=5.0 which moved it to rope_parameters."""
+    if hasattr(hf_config, 'rope_theta') and hf_config.rope_theta is not None:
+        return hf_config.rope_theta
+    if hasattr(hf_config, 'rope_parameters') and hf_config.rope_parameters:
+        return hf_config.rope_parameters.get('rope_theta', default)
+    return default
 
 
 class ModelConfigAdapter:
@@ -74,7 +84,7 @@ class QWen2ConfigAdapter(ModelConfigAdapter):
         self.model_config["model_type"] = "Qwen_v20"
         self.model_config["architectures"] = hf_model_config.architectures
 
-        self.model_config["rotary_emb_base"] = hf_model_config.rope_theta
+        self.model_config["rotary_emb_base"] = _get_rope_theta(hf_model_config)
 
         hidden_size_per_head = int(
             hf_model_config.hidden_size / hf_model_config.num_attention_heads
@@ -101,7 +111,7 @@ class QWen3ConfigAdapter(ModelConfigAdapter):
         self.model_config["model_type"] = "Qwen_v30"
         self.model_config["architectures"] = hf_model_config.architectures
 
-        self.model_config["rotary_emb_base"] = hf_model_config.rope_theta
+        self.model_config["rotary_emb_base"] = _get_rope_theta(hf_model_config)
 
         hidden_size_per_head = int(
             hf_model_config.hidden_size / hf_model_config.num_attention_heads
@@ -128,7 +138,7 @@ class Qwen2MoeConfigAdapter(ModelConfigAdapter):
         self.model_config = hf_model_config.__dict__
         self.model_config["model_type"] = "Qwen_v20_MOE"
 
-        self.model_config["rotary_emb_base"] = hf_model_config.rope_theta
+        self.model_config["rotary_emb_base"] = _get_rope_theta(hf_model_config)
 
         hidden_size_per_head = int(
             hf_model_config.hidden_size / hf_model_config.num_attention_heads
@@ -221,7 +231,7 @@ class LlamaConfigAdapter(ModelConfigAdapter):
 
         self.model_config["model_type"] = "LLaMA_v2"
 
-        self.model_config["rotary_emb_base"] = hf_model_config.rope_theta
+        self.model_config["rotary_emb_base"] = _get_rope_theta(hf_model_config)
 
         hidden_size_per_head = int(
             hf_model_config.hidden_size / hf_model_config.num_attention_heads

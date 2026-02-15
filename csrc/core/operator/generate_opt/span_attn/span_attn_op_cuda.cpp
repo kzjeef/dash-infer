@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    span_attn_op_cuda.cpp
  */
 
@@ -27,6 +28,14 @@
   } while (0)
 
 namespace allspark {
+
+SpanAttnOpCUDA::~SpanAttnOpCUDA() {
+  if (cached_decoder_handle_ != nullptr) {
+    span::DestroyHandle(cached_decoder_handle_);
+    cached_decoder_handle_ = nullptr;
+  }
+}
+
 namespace {
 
 cudaDataType_t to_cuda_type(DataType dtype_) {
@@ -342,7 +351,6 @@ void SpanAttnOpCUDA::decoderAttnLauncher(const RuntimeContext* runtime_ctx) {
 
   const CUDAContext* gpu_ctx = dynamic_cast<const CUDAContext*>(ctx_);
   cudaStream_t cu_stream = gpu_ctx->GetStream();
-  int device_id = gpu_ctx->GetDeviceId();
 
   const AsCacheMode mode = ctx_->GetCacheMode();
   const int max_seq_len = ctx_->GetModelMaxLength();
@@ -362,19 +370,37 @@ void SpanAttnOpCUDA::decoderAttnLauncher(const RuntimeContext* runtime_ctx) {
     new_seq_lens[batch] = gen_ctx->step + seq_len_;
   }
 
-  DispatchCUDA(dtype_, [&]<typename T>() {
-    span::DataType dtype = to_span_data_type<T>();
-    span::SpanAttnHandle_t handle{nullptr};
-    CHECK_SPAN_ATTN(span::CreateHandle(
-        &handle, dtype, CacheUtils::toQuantMode(mode), batch_size_,
-        attn_head_->NumHeads(), attn_head_->NumGroups(),
-        attn_head_->SizePerHead(), span_len, max_num_spans, new_seq_lens.data(),
-        dprop_));
-    if (handle == nullptr) {
+  // Create handle once with max_seq_lens for the current batch_size_, reuse
+  // across steps. Tile mappings for max_length produce extra CTAs that exit
+  // early. If batch_size_ changes, recreate the handle.
+  if (cached_decoder_handle_ == nullptr ||
+      cached_decoder_batch_ != batch_size_) {
+    if (cached_decoder_handle_ != nullptr) {
+      span::DestroyHandle(cached_decoder_handle_);
+      cached_decoder_handle_ = nullptr;
+    }
+    std::vector<int> max_seq_lens(batch_size_, max_seq_len);
+    DispatchCUDA(dtype_, [&]<typename T>() {
+      span::DataType dtype = to_span_data_type<T>();
+      CHECK_SPAN_ATTN(span::CreateHandle(
+          &cached_decoder_handle_, dtype, CacheUtils::toQuantMode(mode),
+          batch_size_, attn_head_->NumHeads(), attn_head_->NumGroups(),
+          attn_head_->SizePerHead(), span_len, max_num_spans,
+          max_seq_lens.data(), dprop_));
+    });
+    if (cached_decoder_handle_ == nullptr) {
       LOG(ERROR)
           << "SpanAttnOpCUDA::decoderAttnLauncher: span::CreateHandle failed";
       AS_THROW(AsStatus::ALLSPARK_RUNTIME_ERROR);
     }
+    cached_decoder_batch_ = batch_size_;
+  }
+
+  // Update only the sequence lengths — no tile mapping recomputation
+  CHECK_SPAN_ATTN(span::UpdateSeqLengths(cached_decoder_handle_,
+                                          new_seq_lens.data(), batch_size_));
+
+  DispatchCUDA(dtype_, [&]<typename T>() {
     CHECK_SPAN_ATTN(
         span::Run(static_cast<T*>(out_tensor->GetDataPtr()),
                   static_cast<const T*>(decoder_q_tensor_->GetDataPtr()),
@@ -385,8 +411,8 @@ void SpanAttnOpCUDA::decoderAttnLauncher(const RuntimeContext* runtime_ctx) {
                   tensor_map_->at("workspace")->GetDataPtr(),
                   tensor_map_->at("workspace")->GetSizeInByte(),
                   host_workspace_->GetDataPtr(),
-                  host_workspace_->GetSizeInByte(), alpha_, handle, cu_stream));
-    CHECK_SPAN_ATTN(span::DestroyHandle(handle));
+                  host_workspace_->GetSizeInByte(), alpha_,
+                  cached_decoder_handle_, cu_stream));
   });
   return;
 }
@@ -583,6 +609,80 @@ AsStatus SpanAttnOpCUDA::deviceReshape(const RuntimeContext* runtime_ctx) {
     AS_CHECK_STATUS(v_span_array_tensor_device_->SetShape(
         Shape({max_batch * max_num_spans})));
   }
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+AsStatus SpanAttnOpCUDA::UpdateGraphParams(RuntimeContext* runtime_ctx) {
+  if (runtime_ctx->is_context) return AsStatus::ALLSPARK_SUCCESS;
+
+  const int max_seq_len = ctx_->GetModelMaxLength();
+  const int max_batch = ctx_->GetModelMaxBatch();
+  const int span_len = ctx_->GetCacheSpanSize();
+  const int max_num_spans = (max_seq_len + span_len - 1) / span_len;
+
+  // Build new_seq_lens (after appending the new token) for span attention,
+  // and populate host tensors so the captured H2D copies read fresh data.
+  std::vector<int> new_seq_lens(batch_size_);
+  std::vector<int> old_seq_lens(batch_size_);
+  for (int batch = 0; batch < batch_size_; batch++) {
+    GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(batch);
+    old_seq_lens[batch] = gen_ctx->step;
+    new_seq_lens[batch] = gen_ctx->step + seq_len_;
+
+    // Update span pointer host tensors (read by captured H2D in
+    // decoderAppendCacheLauncher)
+    const AsTensor& k_cache_ptrs =
+        gen_ctx->virtual_k_cache->GetCache(layer_num_, 0);
+    const AsTensor& v_cache_ptrs =
+        gen_ctx->virtual_v_cache->GetCache(layer_num_, 0);
+    TensorUtils::DeepCopyVectorPart(*k_span_array_tensor_host_,
+                                    batch * max_num_spans, k_cache_ptrs, 0,
+                                    k_cache_ptrs.GetShape()[0]);
+    TensorUtils::DeepCopyVectorPart(*v_span_array_tensor_host_,
+                                    batch * max_num_spans, v_cache_ptrs, 0,
+                                    v_cache_ptrs.GetShape()[0]);
+    // Fill unused span slots with the first valid span pointer (safe to read;
+    // attention weights are zero for these positions after softmax masking)
+    int num_used_spans =
+        (new_seq_lens[batch] + span_len - 1) / span_len;
+    if (num_used_spans < 1) num_used_spans = 1;
+    if (num_used_spans < max_num_spans) {
+      void* const* k_ptrs =
+          static_cast<void* const*>(k_cache_ptrs.GetDataPtr());
+      void* const* v_ptrs =
+          static_cast<void* const*>(v_cache_ptrs.GetDataPtr());
+      void** k_host =
+          static_cast<void**>(k_span_array_tensor_host_->GetDataPtr());
+      void** v_host =
+          static_cast<void**>(v_span_array_tensor_host_->GetDataPtr());
+      for (int s = num_used_spans; s < max_num_spans; s++) {
+        k_host[batch * max_num_spans + s] = k_ptrs[0];
+        v_host[batch * max_num_spans + s] = v_ptrs[0];
+      }
+    }
+  }
+
+  // Update decoder seq len host tensor (read by captured H2D in
+  // decoderAppendCacheLauncher)
+  TensorUtils::DeepCopyFromStdVector(*decoder_seq_len_tensor_host_, 0,
+                                     old_seq_lens);
+
+  // Update the cached handle's seqLengths (used for host→device copy in
+  // span::Run; entries beyond batch_size_ are zeroed so extra CTAs exit early)
+  if (cached_decoder_handle_ != nullptr) {
+    CHECK_SPAN_ATTN(span::UpdateSeqLengths(cached_decoder_handle_,
+                                            new_seq_lens.data(), batch_size_));
+  }
+
+  // Write updated seqLengths directly to host_workspace_ — the captured
+  // cudaMemcpyAsync in span::Run reads from this buffer during graph replay.
+  // SeqLengths (uint32_t[batch_size_]) are at offset 0 in the host workspace.
+  uint32_t* host_seq_ptr =
+      static_cast<uint32_t*>(host_workspace_->GetDataPtr());
+  for (int i = 0; i < batch_size_; i++) {
+    host_seq_ptr[i] = static_cast<uint32_t>(new_seq_lens[i]);
+  }
+
   return AsStatus::ALLSPARK_SUCCESS;
 }
 

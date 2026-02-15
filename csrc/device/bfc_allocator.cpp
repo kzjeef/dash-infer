@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    bfc_allocator.cpp
  */
 
@@ -35,6 +36,10 @@
 #define BFC_FREE_MEMORY 1
 
 namespace allspark {
+
+// Single definitions for the global BFC registry (declared extern in header).
+BFCAllocatorRegistry g_bfc_allocator_registry;
+std::mutex g_bfc_registry_lock;
 
 class BFCAllocatorImpl;
 
@@ -321,7 +326,7 @@ class BFCAllocatorImpl {
     ChunkHandle get_handle(const void* p) const {
       auto* rp = RegionFor(p);
       if (rp) return rp->get_handle(p);
-      return 0;
+      return kInvalidChunkHandle;
     }
 
     void set_handle(const void* p, ChunkHandle h) {
@@ -1041,8 +1046,7 @@ void BFCAllocatorImpl::DeallocateRawInternal(void* ptr) {
 
   // Find the chunk from the ptr.
   BFCAllocatorImpl::ChunkHandle h = region_manager_.get_handle(ptr);
-  if (h == 0) return;
-  AS_ENFORCE(h != kInvalidChunkHandle);
+  if (h == kInvalidChunkHandle) return;
   // Record chunk information before it's freed.
   Chunk* chunk = ChunkFromHandle(h);
   void* chunk_ptr = chunk->ptr;

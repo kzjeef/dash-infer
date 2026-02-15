@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    span_attn.h
  */
 
@@ -110,6 +111,22 @@ SaStatus CreateHandle(SpanAttnHandle_t* handle, DataType dataType,
                       int nGroups, int headSize, int spanLen,
                       int nSpansPerRequest, const int* seqLen,
                       const cudaDeviceProp& deviceProp);
+
+/**
+ * @brief Update the sequence lengths in an existing SpanAttention handle.
+ *
+ * This allows reusing a handle created with max sequence lengths by updating
+ * only the per-request sequence lengths, without recomputing tile mappings.
+ * The kernels mask out-of-range positions using device-side seqLengths.
+ *
+ * @param handle The handle to update.
+ * @param seqLen Host pointer to the new sequence lengths array.
+ * @param count Number of elements in seqLen (must not exceed batchSize).
+ *
+ * @return @c SaStatus status code.
+ */
+SaStatus UpdateSeqLengths(SpanAttnHandle_t handle, const int* seqLen,
+                          int count);
 
 /**
  * @brief Destroy a SpanAttention handle.

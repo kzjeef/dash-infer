@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    span_attention.hpp
  */
 
@@ -129,6 +130,13 @@ class SpanAttn {
   size_t GetHostWorkspaceSize() const {
     return seqLengthsWsSize_ + qkMappingsWsSize_ + qkvMappingsWsSize_ +
            softmaxMappingsWsSize_;
+  }
+
+  void UpdateSeqLengths(const int* seqLens, int count) {
+    for (int i = 0; i < batch_; i++) {
+      seqLengths_[i] =
+          (i < count) ? static_cast<uint32_t>(seqLens[i]) : uint32_t(0);
+    }
   }
 
   /**

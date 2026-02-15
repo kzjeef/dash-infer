@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    handle.hpp
  */
 
@@ -22,6 +23,14 @@ struct SpanAttnHandle {
 
   void* Object() const { return spanAttnObj_; }
   DataType Type() const { return dataType_; }
+
+  void UpdateSeqLengths(const int* seqLens, int count) {
+    dispatchTypeImpl(
+        dataType_, spanAttnObj_,
+        [=]<typename FType>(SpanAttn<FType>* typedObj) {
+          typedObj->UpdateSeqLengths(seqLens, count);
+        });
+  }
 
   template <typename Func, typename... Args>
   void DispatchType(Func&& func, Args&&... args) {

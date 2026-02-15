@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    generate_op.cpp
  */
 
@@ -244,15 +245,46 @@ void GenerateOp::build_batch_gencfg(RuntimeContext* runtime_ctx,
   } else {
     batch_size = runtime_ctx->GetGenCtxListSize();
   }
-  std::vector<float> host_repetition_penalty_list(batch_size);
-  std::vector<float> host_presence_penalty_list(batch_size);
-  std::vector<float> host_frequency_penalty_list(batch_size);
-  std::vector<int> host_no_repeat_ngram_size_list(batch_size);
-  std::vector<int> host_min_length_list(batch_size);
-  std::vector<int> host_eos_token_id_list(batch_size);
-  std::vector<int> host_cur_len_list(batch_size);
-  std::vector<int> host_input_len_list(batch_size);
-  std::vector<int> host_suppress_repetition_in_generation_list(batch_size);
+
+  // Pack all 9 per-batch config arrays into one contiguous host buffer,
+  // then do a single H2D memcpy. This replaces 9 separate 4-byte copies.
+  //
+  // Layout (each field is batch_size elements, all 4 bytes each):
+  //   [0] repetition_penalty (float)
+  //   [1] presence_penalty (float)
+  //   [2] frequency_penalty (float)
+  //   [3] no_repeat_ngram_size (int)
+  //   [4] min_length (int)
+  //   [5] eos_token_id (int)
+  //   [6] cur_len (int)
+  //   [7] input_len (int)
+  //   [8] suppress_repetition_in_generation (int)
+  constexpr int kFields = 9;
+  size_t field_bytes = sizeof(int) * batch_size;  // all fields are 4 bytes
+  size_t total_bytes = kFields * field_bytes;
+
+  packed_gencfg_host_.resize(total_bytes);
+  char* host_ptr = packed_gencfg_host_.data();
+
+  // Ensure device buffer is large enough
+  if (!packed_gencfg_device_ ||
+      packed_gencfg_device_->GetSizeInByte() < (int64_t)total_bytes) {
+    packed_gencfg_device_ = std::make_unique<AsTensor>(
+        "packed_gencfg", ctx->GetDeviceType(), DataType::INT8, DataMode::DENSE,
+        Shape{(int64_t)total_bytes});
+  }
+
+  // Pointers into host buffer
+  float* h_rep_penalty = (float*)(host_ptr + 0 * field_bytes);
+  float* h_pres_penalty = (float*)(host_ptr + 1 * field_bytes);
+  float* h_freq_penalty = (float*)(host_ptr + 2 * field_bytes);
+  int* h_ngram = (int*)(host_ptr + 3 * field_bytes);
+  int* h_min_len = (int*)(host_ptr + 4 * field_bytes);
+  int* h_eos_id = (int*)(host_ptr + 5 * field_bytes);
+  int* h_cur_len = (int*)(host_ptr + 6 * field_bytes);
+  int* h_input_len = (int*)(host_ptr + 7 * field_bytes);
+  int* h_suppress_rep = (int*)(host_ptr + 8 * field_bytes);
+
   for (int i = 0; i < batch_size; i++) {
     GenerateContext* gen_ctx;
     if (runtime_ctx->is_context) {
@@ -261,54 +293,34 @@ void GenerateOp::build_batch_gencfg(RuntimeContext* runtime_ctx,
       gen_ctx = runtime_ctx->GetGenCtx(i);
     }
     GenerateConfig gen_cfg = gen_ctx->gen_cfg;
-    host_repetition_penalty_list[i] = gen_cfg.repetition_penalty;
-    host_presence_penalty_list[i] = gen_cfg.presence_penalty;
-    host_frequency_penalty_list[i] = gen_cfg.frequency_penalty;
-    host_no_repeat_ngram_size_list[i] = gen_cfg.no_repeat_ngram_size;
-    host_min_length_list[i] = gen_cfg.min_length;
-    host_eos_token_id_list[i] = gen_cfg.eos_token_id;
-    host_cur_len_list[i] = gen_ctx->step + gen_ctx->in_length_bias;
-    host_input_len_list[i] = gen_ctx->input_len;
-    host_suppress_repetition_in_generation_list[i] =
-        gen_cfg.suppress_repetition_in_generation ? 1 : 0;
+    h_rep_penalty[i] = gen_cfg.repetition_penalty;
+    h_pres_penalty[i] = gen_cfg.presence_penalty;
+    h_freq_penalty[i] = gen_cfg.frequency_penalty;
+    h_ngram[i] = gen_cfg.no_repeat_ngram_size;
+    h_min_len[i] = gen_cfg.min_length;
+    h_eos_id[i] = gen_cfg.eos_token_id;
+    h_cur_len[i] = gen_ctx->step + gen_ctx->in_length_bias;
+    h_input_len[i] = gen_ctx->input_len;
+    h_suppress_rep[i] = gen_cfg.suppress_repetition_in_generation ? 1 : 0;
   }
-  repetition_penalty_list->CopyDataFrom(host_repetition_penalty_list.data(),
-                                        sizeof(float) * batch_size,
-                                        DeviceType::CPU, ctx);
-  presence_penalty_list->CopyDataFrom(host_presence_penalty_list.data(),
-                                      sizeof(float) * batch_size,
-                                      DeviceType::CPU, ctx);
-  frequency_penalty_list->CopyDataFrom(host_frequency_penalty_list.data(),
-                                       sizeof(float) * batch_size,
-                                       DeviceType::CPU, ctx);
-  no_repeat_ngram_size_list->CopyDataFrom(host_no_repeat_ngram_size_list.data(),
-                                          sizeof(int) * batch_size,
-                                          DeviceType::CPU, ctx);
-  min_length_list->CopyDataFrom(host_min_length_list.data(),
-                                sizeof(int) * batch_size, DeviceType::CPU, ctx);
-  eos_token_id_list->CopyDataFrom(host_eos_token_id_list.data(),
-                                  sizeof(int) * batch_size, DeviceType::CPU,
-                                  ctx);
-  cur_len_list->CopyDataFrom(host_cur_len_list.data(), sizeof(int) * batch_size,
-                             DeviceType::CPU, ctx);
-  input_len_list->CopyDataFrom(host_input_len_list.data(),
-                               sizeof(int) * batch_size, DeviceType::CPU, ctx);
-  suppress_repetition_in_generation_list->CopyDataFrom(
-      host_suppress_repetition_in_generation_list.data(),
-      sizeof(int) * batch_size, DeviceType::CPU, ctx);
 
+  // Single H2D copy for all 9 fields
+  packed_gencfg_device_->CopyDataFrom(host_ptr, total_bytes, DeviceType::CPU,
+                                      ctx);
+
+  // Set up BatchGencfg pointers into the device buffer
+  char* dev_ptr = (char*)packed_gencfg_device_->GetDataPtr();
   batch_gencfg.batch_size = batch_size;
-  batch_gencfg.repetition_penalty_list = repetition_penalty_list->GetDataPtr();
-  batch_gencfg.presence_penalty_list = presence_penalty_list->GetDataPtr();
-  batch_gencfg.frequency_penalty_list = frequency_penalty_list->GetDataPtr();
-  batch_gencfg.no_repeat_ngram_size_list =
-      no_repeat_ngram_size_list->GetDataPtr();
-  batch_gencfg.min_length_list = min_length_list->GetDataPtr();
-  batch_gencfg.eos_token_id_list = eos_token_id_list->GetDataPtr();
-  batch_gencfg.cur_len_list = cur_len_list->GetDataPtr();
-  batch_gencfg.input_len_list = input_len_list->GetDataPtr();
+  batch_gencfg.repetition_penalty_list = dev_ptr + 0 * field_bytes;
+  batch_gencfg.presence_penalty_list = dev_ptr + 1 * field_bytes;
+  batch_gencfg.frequency_penalty_list = dev_ptr + 2 * field_bytes;
+  batch_gencfg.no_repeat_ngram_size_list = dev_ptr + 3 * field_bytes;
+  batch_gencfg.min_length_list = dev_ptr + 4 * field_bytes;
+  batch_gencfg.eos_token_id_list = dev_ptr + 5 * field_bytes;
+  batch_gencfg.cur_len_list = dev_ptr + 6 * field_bytes;
+  batch_gencfg.input_len_list = dev_ptr + 7 * field_bytes;
   batch_gencfg.suppress_repetition_in_generation_list =
-      suppress_repetition_in_generation_list->GetDataPtr();
+      dev_ptr + 8 * field_bytes;
 }
 AsStatus GenerateOp::Reshape(RuntimeContext* runtime_ctx) {
   const int max_batch = ctx_->GetModelMaxBatch();
@@ -375,6 +387,7 @@ AsStatus GenerateOp::Reshape(RuntimeContext* runtime_ctx) {
                                       sizeof(float) * batch_size_,
                                       DeviceType::CPU, ctx_);
 
+      // build_batch_gencfg packs 9 fields into 1 H2D copy (was 9 separate)
       build_batch_gencfg(runtime_ctx, batch_gencfg_, ctx_);
 
       AS_CHECK_STATUS(dec_ids_->SetShape(Shape{batch_size_, 1}));
@@ -469,6 +482,188 @@ AsStatus GenerateOp::Reshape(RuntimeContext* runtime_ctx) {
   }
   return AsStatus::ALLSPARK_SUCCESS;
 }
+AsStatus GenerateOp::RunSampleGPU(RuntimeContext* runtime_ctx) {
+  AsTensor* in_tensor = tensor_map_->at(in_names_[0]).get();
+  char* in_ptr = (char*)in_tensor->GetDataPtr() +
+                 (seq_len_ - 1) * vocab_size_ * SizeofType(dtype_);
+  void* out_ptr = dec_ids_->GetDataPtr();
+  void* ws_ptr = tensor_map_->at("workspace")->GetDataPtr();
+  size_t ws_bytes = tensor_map_->at("workspace")->GetSizeInByte();
+  void** sample_states = (void**)sample_states_->GetDataPtr();
+
+  void* device_prop_ptr = nullptr;
+#ifdef ENABLE_CUDA
+  if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+    device_prop_ptr = device_prop_ ? device_prop_->GetDataPtr() : nullptr;
+  }
+#endif
+
+  {
+    int batch_size;
+    int64_t* max_dec_ids;
+    char* batch_in_ptr = in_ptr;
+    if (runtime_ctx->is_context) {
+      batch_size = 1;
+      max_dec_ids = static_cast<int64_t*>(max_dec_ids_->GetDataPtr()) +
+                    runtime_ctx->current_batch * ctx_->GetModelMaxLength();
+    } else {
+      batch_size = batch_size_;
+      max_dec_ids = static_cast<int64_t*>(max_dec_ids_->GetDataPtr());
+    }
+
+    process_logits_launcher(dtype_, max_dec_ids, batch_in_ptr, batch_size,
+                            vocab_size_, ctx_, runtime_ctx, batch_gencfg_,
+                            ws_ptr, ws_bytes);
+  }
+
+  // Stream ordering guarantees process_logits completes before sampling.
+  // No sync needed — all kernels share the same CUDA stream.
+  kernel_launcher(dtype_, static_cast<int64_t*>(out_ptr), topk_value_ptr_,
+                  topp_value_ptr_, static_cast<int*>(topk_indice_ptr_), in_ptr,
+                  sample_states, batch_size_, max_k_, vocab_size_,
+                  static_cast<int*>(topk_list_->GetDataPtr()),
+                  static_cast<float*>(topp_list_->GetDataPtr()),
+                  static_cast<float*>(temperature_list_->GetDataPtr()), ctx_,
+                  runtime_ctx, ws_ptr, ws_bytes, device_prop_ptr);
+
+  if (need_logprobs_) {
+    logprobs_launcher(dtype_, in_ptr, static_cast<int64_t*>(out_ptr),
+                      token_logprobs_->GetDataPtr(), logprobs_->GetDataPtr(),
+                      topk_value_ptr_, static_cast<int*>(topk_indice_ptr_),
+                      batch_size_, vocab_size_, runtime_ctx, ws_ptr, ws_bytes,
+                      ctx_);
+  }
+
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+AsStatus GenerateOp::RunSamplePostProcess(RuntimeContext* runtime_ctx) {
+  const DeviceType device = ctx_->GetDeviceType();
+
+#ifdef ENABLE_CUDA
+  if (device == DeviceType::CUDA) {
+    const CUDAContext* cuda_ctx = static_cast<const CUDAContext*>(ctx_);
+    if (cuda_ctx->GetNranks() > 1) {
+      AsStatus status = NcclBcast(dec_ids_, cuda_ctx);
+      if (status != AsStatus::ALLSPARK_SUCCESS) {
+        LOG(ERROR) << "forward failed in sampling " << std::endl;
+        return status;
+      }
+    }
+
+    fill_generated_ids_gpu(runtime_ctx, dec_ids_, gen_ids_ptr_, dec_ids_host_,
+                           cuda_ctx, rank_id_);
+  }
+#endif
+
+  if (device == DeviceType::CPU) {
+    if (nrank_ > 1) {
+#ifdef ENABLE_MULTINUMA
+      AsStatus status = MpiBcast(dec_ids_);
+      if (status != AsStatus::ALLSPARK_SUCCESS) {
+        LOG(ERROR) << "forward failed in sampling " << std::endl;
+        return status;
+      }
+#else
+      LOG(ERROR) << "Multi-NUMA codes are not compiled" << std::endl;
+      return AsStatus::ALLSPARK_RUNTIME_ERROR;
+#endif
+    }
+
+    fill_generated_ids_cpu(runtime_ctx, dec_ids_, rank_id_);
+  }
+  int batch_stride = ctx_->GetMaxTopLogprobs();
+  int batch_size = runtime_ctx->GetGenCtxListSize();
+  if (rank_id_ == 0) {
+    if (runtime_ctx->is_context) {
+      UpdateProbs(runtime_ctx->GetContextGenCtx(), runtime_ctx, 0,
+                  batch_stride);
+    } else {
+      for (int i = 0; i < batch_size; i++) {
+        GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(i);
+        UpdateProbs(gen_ctx, runtime_ctx, i, batch_stride);
+      }
+    }
+  }
+
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+AsStatus GenerateOp::RunSampleGPUPost(RuntimeContext* runtime_ctx) {
+#ifdef ENABLE_CUDA
+  if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+    const CUDAContext* cuda_ctx = static_cast<const CUDAContext*>(ctx_);
+    if (cuda_ctx->GetNranks() > 1) {
+      AsStatus status = NcclBcast(dec_ids_, cuda_ctx);
+      if (status != AsStatus::ALLSPARK_SUCCESS) {
+        LOG(ERROR) << "forward failed in sampling (NCCL bcast)" << std::endl;
+        return status;
+      }
+    }
+
+    saved_ptrs_host_ = fill_generated_ids_gpu_enqueue(
+        runtime_ctx, dec_ids_, gen_ids_ptr_, cuda_ctx);
+  }
+#endif
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+#ifdef ENABLE_CUDA
+AsStatus GenerateOp::EnqueueSampleD2H(RuntimeContext* runtime_ctx,
+                                       cudaStream_t d2h_stream) {
+  if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+    fill_generated_ids_gpu_d2h(dec_ids_, dec_ids_host_, d2h_stream);
+  }
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+#endif
+
+#ifdef ENABLE_CUDA
+AsStatus GenerateOp::CompleteSampleD2H(RuntimeContext* runtime_ctx) {
+  if (ctx_->GetDeviceType() == DeviceType::CUDA) {
+    int batch_size = static_cast<int>(saved_ptrs_host_.size());
+    fill_generated_ids_gpu_complete(saved_ptrs_host_, dec_ids_host_,
+                                    batch_size);
+    saved_ptrs_host_.clear();
+  }
+
+  // UpdateProbs
+  int batch_stride = ctx_->GetMaxTopLogprobs();
+  int batch_size = runtime_ctx->GetGenCtxListSize();
+  if (rank_id_ == 0) {
+    if (runtime_ctx->is_context) {
+      UpdateProbs(runtime_ctx->GetContextGenCtx(), runtime_ctx, 0,
+                  batch_stride);
+    } else {
+      for (int i = 0; i < batch_size; i++) {
+        GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(i);
+        UpdateProbs(gen_ctx, runtime_ctx, i, batch_stride);
+      }
+    }
+  }
+
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+#endif
+
+AsStatus GenerateOp::UpdateGraphParams(RuntimeContext* runtime_ctx) {
+#ifdef ENABLE_CUDA
+  if (ctx_->GetDeviceType() != DeviceType::CUDA || runtime_ctx->is_context) {
+    return AsStatus::ALLSPARK_SUCCESS;
+  }
+
+  // Refresh batch_gencfg: cur_len changes per step (from gen_ctx->step).
+  build_batch_gencfg(runtime_ctx, batch_gencfg_, ctx_);
+
+  // Refresh max_dec_ids: copy latest generated tokens for repetition penalty.
+  fill_max_dec_ids_launcher(runtime_ctx, max_dec_ids_, ctx_);
+
+  // Sample states pointers are stable within a batch — no update needed.
+  // (sample_state->GetDataPtr() doesn't change between decode steps.)
+#endif
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
 AsStatus GenerateOp::RunSample(RuntimeContext* runtime_ctx) {
   const DeviceType device = ctx_->GetDeviceType();
   AsTensor* in_tensor = tensor_map_->at(in_names_[0]).get();
@@ -585,8 +780,8 @@ AsStatus GenerateOp::RunSample(RuntimeContext* runtime_ctx) {
   }
 #endif  // ENABLE_JSON_MODE
 
-  // don't remove this sync, otherwise wrong token will generate.
-  ctx_->Synchronize();
+  // Stream ordering guarantees process_logits completes before sampling.
+  // No sync needed — all kernels share the same CUDA stream.
   kernel_launcher(dtype_, static_cast<int64_t*>(out_ptr), topk_value_ptr_,
                   topp_value_ptr_, static_cast<int*>(topk_indice_ptr_), in_ptr,
                   sample_states, batch_size_, max_k_, vocab_size_,
@@ -603,51 +798,7 @@ AsStatus GenerateOp::RunSample(RuntimeContext* runtime_ctx) {
                       ctx_);
   }
 
-#ifdef ENABLE_CUDA
-  if (device == DeviceType::CUDA) {
-    const CUDAContext* cuda_ctx = static_cast<const CUDAContext*>(ctx_);
-    if (cuda_ctx->GetNranks() > 1) {
-      AsStatus status = NcclBcast(dec_ids_, cuda_ctx);
-      if (status != AsStatus::ALLSPARK_SUCCESS) {
-        LOG(ERROR) << "forward failed in sampling " << std::endl;
-        return status;
-      }
-    }
-
-    fill_generated_ids_gpu(runtime_ctx, dec_ids_, gen_ids_ptr_, dec_ids_host_,
-                           cuda_ctx, rank_id_);
-  }
-#endif
-
-  if (device == DeviceType::CPU) {
-    if (nrank_ > 1) {
-#ifdef ENABLE_MULTINUMA
-      AsStatus status = MpiBcast(dec_ids_);
-      if (status != AsStatus::ALLSPARK_SUCCESS) {
-        LOG(ERROR) << "forward failed in sampling " << std::endl;
-        return status;
-      }
-#else
-      LOG(ERROR) << "Multi-NUMA codes are not compiled" << std::endl;
-      return AsStatus::ALLSPARK_RUNTIME_ERROR;
-#endif
-    }
-
-    fill_generated_ids_cpu(runtime_ctx, dec_ids_, rank_id_);
-  }
-  int batch_stride = ctx_->GetMaxTopLogprobs();
-  int batch_size = runtime_ctx->GetGenCtxListSize();
-  if (rank_id_ == 0) {
-    if (runtime_ctx->is_context) {
-      UpdateProbs(runtime_ctx->GetContextGenCtx(), runtime_ctx, 0,
-                  batch_stride);
-    } else {
-      for (int i = 0; i < batch_size; i++) {
-        GenerateContext* gen_ctx = runtime_ctx->GetGenCtx(i);
-        UpdateProbs(gen_ctx, runtime_ctx, i, batch_stride);
-      }
-    }
-  }
+  AS_CHECK_STATUS(RunSamplePostProcess(runtime_ctx));
 
   return AsStatus::ALLSPARK_SUCCESS;
 }

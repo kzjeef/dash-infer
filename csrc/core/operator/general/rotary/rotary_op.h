@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    rotary_op.h
  */
 
@@ -36,6 +37,7 @@ class RotaryOp : public AsOperator {
                 const TensorMap& weights_map, TensorMap* tensor_map);
   AsStatus Reshape(RuntimeContext* runtime_ctx) override;
   AsStatus Forward(RuntimeContext* runtime_ctx) override;
+  AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) override;
   AsStatus RunContext(RuntimeContext* runtime_ctx);
   AsStatus RunDecoder(RuntimeContext* runtime_ctx);
   AsStatus RunRotary(int run_batch_size, AsTensor* rotary_step,

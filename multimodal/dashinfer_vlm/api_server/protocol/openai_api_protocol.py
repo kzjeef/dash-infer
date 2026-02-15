@@ -35,7 +35,7 @@ class ModelCard(BaseModel):
     id: str
     object: str = "model"
     created: int = Field(default_factory=lambda: int(time.time()))
-    owned_by: str = "fastchat"
+    owned_by: str = "dashinfer"
     root: Optional[str] = None
     parent: Optional[str] = None
     permission: List[ModelPermission] = []

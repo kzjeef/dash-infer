@@ -1,9 +1,13 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    as_engine_decode.cpp
  */
 
 #include "as_engine.h"
+
+#include <common/env_config.h>
+#include <utility/timer.h>
 
 namespace allspark {
 
@@ -184,6 +188,11 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
   DLOG(INFO) << "[" << model_name << "] "
              << "AsEngineImpl::RunTextGenerationContinue" << std::endl;
 
+  static thread_local int time_log = -1;
+  if (time_log < 0)
+    time_log = EnvVarConfig::GetInt("ALLSPARK_TIME_LOG", 0);
+  util::Timer t_total;
+
   // check model registered
   if (model_irs_[model_name] == nullptr) {
     LOG(ERROR) << "[" << model_name << "] "
@@ -200,14 +209,77 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
     return AsStatus::ALLSPARK_INVALID_CALL_ERROR;
   }
 
-  // 即使失败、异常，也要让各子线程运行完毕，以保证原子性。在可恢复的情况下，确保下一次请求有干净的环境
-  AsStatus failed_ret = AsStatus::ALLSPARK_SUCCESS;
-  std::future<AsStatus> result[nranks_];
-
   int pending_num = workers_decode_[0]->GetPendingDecodeNum();
   int64_t min_free_count = min_free_frame_count_.load();
 
+  // Single-GPU fast path: bypass threadpool entirely to avoid
+  // mutex/condvar/future overhead (~200-400us per step)
+  if (nranks_ == 1) {
+    util::Timer t_alloc;
+    int pres_frame = 0;
+    AsStatus alloc_ret;
+    try {
+      alloc_ret = workers_decode_[0]->AllocDecoderMemory(
+          pending_num, min_free_count, pres_frame);
+    } catch (std::exception& e) {
+      LOG(ERROR) << "AllocDecoderMemory Failed!"
+                 << " status: " << std::string(e.what())
+                 << " worker_id: 0";
+      if (std::string(e.what()) == "ALLSPARK_MEMORY_ERROR" ||
+          std::string(e.what()) == "ALLSPARK_CACHE_MEMORY_OUT") {
+        alloc_ret = AsStatus::ALLSPARK_CACHE_MEMORY_OUT;
+      } else {
+        alloc_ret = AsStatus::ALLSPARK_RUNTIME_ERROR;
+      }
+    }
+    if (alloc_ret != AsStatus::ALLSPARK_SUCCESS) {
+      workers_decode_[0]->FreePresFrame(pres_frame);
+      return alloc_ret;
+    }
+
+    long alloc_us = t_alloc.elapsed_micro();
+    util::Timer t_decode;
+    AsStatus decode_ret;
+    try {
+      decode_ret = workers_decode_[0]->RunTextGenerationContinue();
+    } catch (std::exception& e) {
+      if (std::string(e.what()) == "ALLSPARK_MEMORY_ERROR") {
+        LOG(ERROR) << "AsEngineImpl::RunTextGenerationContinue: "
+                      "exception caught: ALLSPARK_MEMORY_ERROR";
+        throw AsException(("ALLSPARK_MEMORY_ERROR"));
+      } else {
+        AsSaveError(e.what());
+        LOG(ERROR) << "AsEngineImpl::RunTextGenerationContinue: "
+                      "exception caught: "
+                   << e.what() << ", saved with AsSaveError";
+        decode_ret = AsStatus::ALLSPARK_RUNTIME_ERROR;
+      }
+    }
+    // Normalize: worker returns ALLSPARK_STREAMING on success (same as
+    // threadpool path which uses AS_STATUS_OK to keep failed_ret as SUCCESS)
+    if (AS_STATUS_OK(decode_ret)) {
+      if (time_log) {
+        long decode_us = t_decode.elapsed_micro();
+        long total_us = t_total.elapsed_micro();
+        LOG(INFO) << "EngineDecodeStep(us): total=" << total_us
+                  << " alloc=" << alloc_us
+                  << " decode=" << decode_us
+                  << " overhead=" << (total_us - decode_us);
+      }
+      return AsStatus::ALLSPARK_SUCCESS;
+    }
+    return decode_ret;
+  }
+
+  // Multi-GPU path: dispatch to workers via threadpool
+  AsStatus failed_ret = AsStatus::ALLSPARK_SUCCESS;
+  std::future<AsStatus> result[nranks_];
+
   std::vector<int> pres_frame(nranks_);
+  util::Timer t_alloc;
+#ifdef ENABLE_CUDA
+  { Tracer __t_ae("AllocEnqueue", 2);
+#endif
   for (int i = 0; i < nranks_; ++i) {
     result[i] = threadpool_decode_->enqueue(
         i, [this, i, pending_num, min_free_count, &pres_frame]() {
@@ -227,15 +299,24 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
           }
         });
   }
+#ifdef ENABLE_CUDA
+  }  // end AllocEnqueue
+#endif
 
   bool has_fail = false;
   std::vector<AsStatus> tmp_ret(nranks_);
+#ifdef ENABLE_CUDA
+  { Tracer __t_aw("AllocWait", 3);
+#endif
   for (int i = 0; i < nranks_; ++i) {
     tmp_ret[i] = result[i].get();
     if (tmp_ret[i] != AsStatus::ALLSPARK_SUCCESS) {
       has_fail = true;
     }
   }
+#ifdef ENABLE_CUDA
+  }  // end AllocWait
+#endif
 
   for (int i = 0; i < nranks_; ++i) {
     AsStatus ret = tmp_ret[i];
@@ -254,16 +335,24 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
     }
   }
 
-  // 任何一个子线程reshape阶段出问题都返回
   if (failed_ret != AsStatus::ALLSPARK_SUCCESS) {
     return failed_ret;
   }
 
+  long alloc_us = t_alloc.elapsed_micro();
+  util::Timer t_decode;
+#ifdef ENABLE_CUDA
+  { Tracer __t_de("DecodeEnqueue", 1);
+#endif
   for (int i = 0; i < nranks_; ++i) {
     result[i] = threadpool_decode_->enqueue(i, [this, i]() {
       return workers_decode_[i]->RunTextGenerationContinue();
     });
   }
+#ifdef ENABLE_CUDA
+  }  // end DecodeEnqueue
+  { Tracer __t_dw("DecodeWait", 0);
+#endif
 
   for (int i = 0; i < nranks_; ++i) {
     try {
@@ -282,6 +371,17 @@ AsStatus AsEngineImpl::RunTextGenerationContinue(const char* model_name) {
         failed_ret = AsStatus::ALLSPARK_RUNTIME_ERROR;
       }
     }
+  }
+#ifdef ENABLE_CUDA
+  }  // end DecodeWait
+#endif
+  if (time_log && failed_ret == AsStatus::ALLSPARK_SUCCESS) {
+    long decode_us = t_decode.elapsed_micro();
+    long total_us = t_total.elapsed_micro();
+    LOG(INFO) << "EngineDecodeStep(us): total=" << total_us
+              << " alloc_tp=" << alloc_us
+              << " decode_tp=" << decode_us
+              << " overhead=" << (total_us - decode_us);
   }
   return failed_ret;
 }

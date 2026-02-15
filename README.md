@@ -15,9 +15,11 @@
 
 
 ## News
-- [2024/12] 🔥 DashInfer: Announcing the release of v2.0, now with enhanced GPU (CUDA) support! This version includes features like prefix caching (with GPU & CPU swapping), guided decoding, optimized attention for GQA, a lockless reactor engine, and newly added support for the VLM model (Qwen-VL) and MoE Models. For more details, please refer to the [release notes](https://dashinfer.readthedocs.io/en/latest/index.html#v2-0-0).
+- [2026/02] 🔥 DashInfer v3.0 released! Major new features include CUDA Graph acceleration for decode phase, DeepSeek V3 (671B) support with Multi-Latent Attention (MLA), FP8 (A8W8) quantization on Hopper GPUs, continuous-batch LoRA optimization, and Expert Parallelism (EP) for large MoE models. For more details, please refer to the [release notes](https://dashinfer.readthedocs.io/en/latest/index.html#v3-0-0).
 
-- [2024/06] DashInfer:  v1.0 release with x86 & ARMv9 CPU and CPU flash attention support.
+- [2024/12] DashInfer v2.0 released with enhanced GPU (CUDA) support, prefix caching (with GPU & CPU swapping), guided decoding, optimized attention for GQA, a lockless reactor engine, and newly added support for the VLM model (Qwen-VL) and MoE Models.
+
+- [2024/06] DashInfer v1.0 release with x86 & ARMv9 CPU and CPU flash attention support.
 
 # Introduction
 
@@ -30,25 +32,33 @@ DashInfer is a highly optimized LLM inference engine with the following core fea
 
 - **High Precision**: DashInfer has been rigorously tested to ensure accuracy, and is able to provide inference whose accuracy is consistent with PyTorch and other GPU engines (e.g., vLLM).
 
-- **High Performance**: DashInfer employs optmized kernels to provide high-performance LLM serving, as well as lots of standard LLM inference techniques, including:
+- **High Performance**: DashInfer employs optimized kernels to provide high-performance LLM serving, as well as lots of standard LLM inference techniques, including:
 
   - **Continuous Batching**: DashInfer allows for the immediate insertion of new requests and supports streaming outputs.
 
   - **Paged Attention**: Using our self-developed paged attention technique (which we call *SpanAttention*), we can achieve efficient acceleration of attention operator, combined with int8 and uint4 KV cache quantization, based on highly efficient GEMM and GEMV implementations.
 
+  - **CUDA Graph**: DashInfer supports CUDA Graph capture for the decode phase, significantly reducing kernel launch overhead and improving throughput for small-batch/latency-sensitive scenarios.
+
+  - **Multi-Latent Attention (MLA)**: DashInfer supports the MLA architecture (used in DeepSeek V3) for compressed KV cache, reducing per-token KV cache by ~28x compared to standard multi-head attention.
+
   - **Prefix Cache**: DashInfer supports highly efficient Prefix Cache for prompts, which accelerates standard LLMs and MultiModal LMs (MMLMs) like Qwen-VL, using both GPU and CPU.
 
-  - **Quantization Support**: Using DashInfer's *InstantQuant* (IQ), weight-only quantization acceleration can be achieved without fine-tuning, improving deployment efficiency. Accuracy evaluation shows that IQ has almost no impact on model accuracy, for detail, see :doc:`quant/weight_activate_quant`.
+  - **Quantization Support**: Using DashInfer's *InstantQuant* (IQ), weight-only quantization acceleration can be achieved without fine-tuning, improving deployment efficiency. DashInfer also supports FP8 (A8W8) quantization on Hopper GPUs (SM90+) for further performance gains.
+
+  - **LoRA**: DashInfer supports continuous-batch LoRA optimization with dynamic loading/unloading of LoRA adapters at runtime, enabling efficient multi-tenant serving.
 
   - **Asynchronous Interface**: Request-based asynchronous interfaces offer individual control over generation parameters and request status of each request.
 
 - Supported Models:
 
-  - **Mainstream Open-Source LLMs**: DashInfer supports mainstream open-source LLMs including Qwen, LLaMA, ChatGLM, etc., and supports loading models in the Huggingface format.
+  - **Mainstream Open-Source LLMs**: DashInfer supports mainstream open-source LLMs including Qwen (1/1.5/2/2.5/3), LLaMA (2/3), ChatGLM, DeepSeek V3, and more, supporting loading models in the Huggingface format.
+
+  - **MoE Models**: DashInfer supports Mixture-of-Experts models including Qwen2-MoE and DeepSeek V3 (671B, 256 experts), with Expert Parallelism (EP) support for multi-GPU distribution.
 
   - **MultiModal LMs**: DashInfer supports MultiModal Language Models (MMLMs) including Qwen-VL, Qwen-AL, and Qwen2-VL.
 
-- **OpenAI API Server**: DashInfer can easily serve with fastChat to achieve OpenAI-compatible API server.
+- **OpenAI API Server**: DashInfer provides OpenAI-compatible API server capabilities for both LLM and VLM serving.
 
 - **Multi-Programming-Language API**: Both C++ and Python interfaces are provided. It is possible to extend C++ interface to Java, Rust and other programming languages, via standard cross-language interfaces.
 
@@ -56,9 +66,9 @@ DashInfer is a highly optimized LLM inference engine with the following core fea
 # Supported Hardware and Data Types
 
 ## Hardware
-- **CUDA GPUs**: Support CUDA Version from 11.4 - 12.9, and supports various CUDA compute architectures like SM70 - SM90a (T4, 3090, 4090, V100, A100, A10, L20, H20, H100). SM100 (B200) is experimental.
-- **x86 CPUs**: Hardware support for AVX2 instruction set is required. For Intel's 5th generation Xeon processors (Emerald Rapids), 4th generation Xeon processors (Sapphire Rapids), corresponding to Aliyun's 8th generation ECS instances (e.g., g8i), AMX instructions are used to accelerate caculation.
-- **ARMv9 CPU**: Hardware support for SVE instruction set is required. DashInfer supports ARMv9 architecture processors such as Yitian710, corresponding to Aliyun's 8th generation ECS instances (e.g. g8y), and adopts SVE instruction to accelerate caculation.
+- **CUDA GPUs**: Support CUDA Version from 11.4 - 12.9, and supports various CUDA compute architectures like SM70 - SM100 (T4, 3090, 4090, V100, A100, A10, L20, H20, H100, B200). SM100 (B200) is experimental.
+- **x86 CPUs**: Hardware support for AVX2 instruction set is required. For Intel's 5th generation Xeon processors (Emerald Rapids), 4th generation Xeon processors (Sapphire Rapids), corresponding to Aliyun's 8th generation ECS instances (e.g., g8i), AMX instructions are used to accelerate calculation.
+- **ARMv9 CPU**: Hardware support for SVE instruction set is required. DashInfer supports ARMv9 architecture processors such as Yitian710, corresponding to Aliyun's 8th generation ECS instances (e.g. g8y), and adopts SVE instruction to accelerate calculation.
 
 ## Data Types
 - **CUDA GPUs**: FP16, BF16, FP8, FP32, Int8(InstantQuant), Int4(InstantQuant)
@@ -91,6 +101,28 @@ In terms of quantization granularity, there are two types:
 - **Per-Channel**: DashInfer's quantization techniques at least adopt the Per-Channel (also known as Per-Token) quantization granularity, and some also provide Sub-Channel quantization granularity. Generally speaking, Per-Channel quantization can meet most accuracy requirements due to its simple implementation and optimal performance. Only when the accuracy of Per-Channel quantization is insufficient should the Sub-Channel quantization strategy be considered.
 - **Sub-Channel**: Compared to Per-Channel quantization, Sub-Channel refers to dividing a channel into N groups, and calculating quantization parameters within each group. This quantization granularity typically provides better accuracy, but due to increased implementation complexity, it comes with many limitations. For example, performance may be slightly slower than Per-Channel quantization, and Activation quantization is difficult to implement Sub-Channel quantization due to computational formula constraints (DashInfer's Activation quantization is all Per-Channel).
 
+# Software Dependencies
+
+## Build Dependencies
+
+DashInfer uses [Conan 2.x](https://conan.io/) to manage C++ third-party dependencies. The main dependencies include:
+
+| Dependency | Version |
+|---|---|
+| Conan | >= 2.0 |
+| protobuf | 3.18.3 |
+| gtest | 1.11.0 |
+| glog | 0.5.0 |
+| pybind11 | 2.13.6 |
+| zlib | 1.2.13 |
+
+> Note: Conan 1.x is no longer supported. Please upgrade to Conan 2.x: `pip install "conan>=2.0"`
+
+## Runtime Dependencies
+
+1. **Python**: DashInfer Python package depends on PyTorch and Huggingface Transformers (for safetensors model weight loading). Individual models may have their own dependencies due to HuggingFace interfaces.
+2. **C++**: The C++ package statically links all third-party dependencies with hidden symbols, so there are no runtime third-party library dependencies. Official C++ package distribution is provided through Conan 2.x.
+
 # Documentation and Example Code
 
 ## Documentation
@@ -118,7 +150,7 @@ For the detailed user manual, please refer to the documentation: [Documentation 
 
 ## Code Examples
 
-In `<path_to_dashinfer>/examples` there are examples for C++ and Python interfaces, and please refer to the documentation in `<path_to_dashinfer>/documents/EN` to run the examples.
+In `<path_to_dashinfer>/examples` there are examples for C++ and Python interfaces, and please refer to the documentation in `<path_to_dashinfer>/docs/EN` to run the examples.
 
 
 
@@ -195,7 +227,9 @@ If you find them useful, please feel free to cite these papers:
 }
 ```
 
-# Future Plans
+# Roadmap
+
+## Completed
 - [x] GPU Support
 - [x] Multi Modal Model support
 - [x] Accelerate attention with Flash-Attention
@@ -205,11 +239,40 @@ If you find them useful, please feel free to cite these papers:
 - [x] Support MoE architecture
 - [x] Guided output: Json Mode
 - [x] Prefix Cache: Support GPU Prefix Cache and CPU Swap 
-- [x] Quantization: Fp8 A8W8 Activation quantization support on CUDA.
-- [x] LORA: Continues Batch LORA Optimization.
-- [x] Parallel Context phase and Generation phase within engine.
-- [x] More effective MoE Operator on GPU.
-- [ ] Porting to AMD(ROCm) Platform.
+- [x] Quantization: FP8 A8W8 Activation quantization support on CUDA
+- [x] LoRA: Continuous Batch LoRA Optimization
+- [x] Parallel Context phase and Generation phase within engine
+- [x] More effective MoE Operator on GPU
+- [x] CUDA Graph: Piecewise CUDA Graph capture for decode phase acceleration
+- [x] MLA: Multi-Latent Attention support (DeepSeek V3)
+- [x] Expert Parallelism (EP) for large MoE models
+
+## In Progress & Planned
+
+### [Performance Optimization](docs/EN/roadmap_performance.md)
+Goal: match vLLM/SGLang throughput on dense 72B (H100) and DeepSeek V3.2 (B200).
+Focus: strengthen DeepSeek serving path with MTP/EAGLE and architecture-specific hardening.
+- [ ] Chunked Prefill + Unified Scheduler
+- [ ] CUDA Graph Full capture for decode phase
+- [ ] Multi-Token Prediction (MTP, DeepSeek-first)
+- [ ] Speculative Decoding (EAGLE)
+- [ ] DP Attention (Data-Parallel Attention for MoE + MLA)
+- [ ] FP4 MoE Fused Kernel (Blackwell B200)
+- [ ] NSA Kernel Fusion (DeepSeek V3.2 Native Sparse Attention)
+- [ ] DeepSeek Architecture Hardening (MLA/MoE/NextN long-context stability)
+
+### [RL Training Integration](docs/EN/roadmap_rl_integration.md)
+Goal: enable DashInfer as inference backend for RLHF/GRPO/DPO training (OpenRLHF, veRL, TRL).
+Priority: higher than distributed PD + unified KV-cache work.
+- [ ] Prompt Logprobs (prefill-stage log probabilities)
+- [ ] In-Place Weight Update (hot reload without restart)
+- [ ] Sleep/Wake Mode (GPU memory yield for training)
+- [ ] Training-Inference Colocation
+- [ ] Ray / Distributed Orchestration Integration
+
+### Other
+- [ ] Porting to AMD (ROCm) Platform
+- [ ] [Infrastructure Upgrade](docs/EN/roadmap_infra_upgrade.md): Flash Attention 3/4 upgrade, CUTLASS upgrade, Docker image modernization, Conan 2.x, Python 3.10+ default
 
 # License
 

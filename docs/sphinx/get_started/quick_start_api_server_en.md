@@ -1,88 +1,141 @@
-## Quick Start Guide for OpenAI API Chat Server
+## Quick Start Guide for OpenAI API Server
 
-### Test the OpenAI API Server (fastapi)
+DashInfer provides a built-in OpenAI-compatible API server for both LLM and VLM models. The model type is auto-detected from the HuggingFace config.
 
-prepare:
-`pip install fastapi uvicorn openai`
-
-start server
-`python ./dash-infer/examples/api_server/fastapi/fastapi-server.py`
-
-user may change the parameter by check `fastapi-server.py -h`
-
-After sever start, server will print some log like: 
-```
-INFO:     Started server process [4898]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
-```
-
-test with openai client
-`python ./dash-infer/examples/api_server/fastapi/openai-client.py`
-
-This client will call with openai client with streaming and block mode.
-
-
-
-### Start OpenAI Server with Docker (fastchat)
-
-We have provide a Docker image to start OpenAI server.
-This example demonstrates how to use Docker to run DashInfer as an inference engine, providing OpenAI API endpoints.
+### 1. Install
 
 ```shell
-docker run \
-    --shm-size=8g \
-    --network=host \
-    --ipc=host \
-    --gpus=all \
-    -v=<host_path_to_your_model>:<container_path_to_your_model> \
-    dashinfer/fschat_ubuntu_cuda:v2.0 \
-    -h <host> -p <port> -m -- --model-path <container_path_to_your_model> --device-list <device_list>
-```
- 
-- `<host_path_to_your_model>`: Path to your model on the host
-- `<container_path_to_your_model>`: Path where the model is mounted in the container
-- `<device_list>`: List of devices supported by the model, e.g., `0,1`
-- `-h`: The listening address of the API server
-- `-p`: The listening port of the API server
-- `-m`: Use Modelscope to download the model
-- `--model-path`: Path for loading or downloading the model
-- `--device-list`: List of CUDA devices used to run the model
+# LLM serving
+pip install "dashinfer[serving]"
 
-For example:
-
-```shell
-docker run  \
-    --shm-size=8g \
-    --network=host \
-    --ipc=host \
-    --gpus=all \
-    -v=/mnt/models/modelscope/hub/qwen/Qwen2.5-7B-Instruct:/models/qwen/Qwen2.5-7B-Instruct \
-    dashinfer/fschat_ubuntu_cuda:v2.0 \
-    -h 127.0.0.1 -p 8088 -m -- --model-path /models/qwen/Qwen2.5-7B-Instruct --device-list 0
+# LLM + VLM serving
+pip install "dashinfer[serving,vlm]"
 ```
 
-You can also build you owner fastchat Docker image by modifying the Docker file `scripts/docker/fschat_ubuntu_cuda.Dockerfile`.
-
-### Testing the OpenAI API Server (fastchat)
-
-#### Testing with OpenAI SDK
-In `examples/api_server/fschat/openai-client.py`, the official OpenAI SDK is used to test the API server.
+### 2. Start LLM Server
 
 ```shell
-python examples/api_server/fschat/openai-client.py
+dashinfer_serve --model Qwen/Qwen2.5-7B-Instruct
+
+# Multi-GPU
+dashinfer_serve --model Qwen/Qwen2.5-72B-Instruct --tensor-parallel 4
+
+# Custom port and settings
+dashinfer_serve --model Qwen/Qwen2.5-7B-Instruct \
+    --port 8080 --max-batch 64 --max-length 16384
 ```
 
-#### Testing with curl
-Assuming the OpenAI Server has been started and the port number is `8088`, you can use the following command:
+Or via Python module:
 
 ```shell
-curl http://127.0.0.1:8088/v1/chat/completions \
+python -m dashinfer.serving --model Qwen/Qwen2.5-7B-Instruct
+```
+
+### 3. Start VLM Server
+
+```shell
+# Auto-detected as VLM (requires dashinfer[serving,vlm])
+dashinfer_serve --model Qwen/Qwen2-VL-7B-Instruct
+
+# Force VLM mode with Transformers vision encoder
+dashinfer_serve --model Qwen/Qwen2-VL-7B-Instruct \
+    --mode vlm --vision-engine transformers
+```
+
+### 4. LLM Chat Completion
+
+```shell
+curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Qwen2-7B-Instruct",
-    "messages": [{"role": "user", "content": "Hello! What is your name?"}]
+    "model": "Qwen2.5-7B-Instruct",
+    "messages": [
+      {"role": "system", "content": "You are a helpful assistant."},
+      {"role": "user", "content": "Hello! What is your name?"}
+    ]
   }'
 ```
 
+### 5. Streaming
+
+```shell
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen2.5-7B-Instruct",
+    "messages": [{"role": "user", "content": "Write a short poem."}],
+    "stream": true
+  }'
+```
+
+### 6. VLM Image Understanding
+
+```shell
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen2-VL-7B-Instruct",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}},
+        {"type": "text", "text": "What is in this image?"}
+      ]
+    }],
+    "max_tokens": 512
+  }'
+```
+
+### 7. Python Client (OpenAI SDK)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+
+# LLM
+response = client.chat.completions.create(
+    model="Qwen2.5-7B-Instruct",
+    messages=[{"role": "user", "content": "Explain quantum computing."}],
+)
+print(response.choices[0].message.content)
+
+# VLM
+response = client.chat.completions.create(
+    model="Qwen2-VL-7B-Instruct",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}},
+            {"type": "text", "text": "Describe this image."},
+        ],
+    }],
+)
+print(response.choices[0].message.content)
+```
+
+### Available Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Health check (returns mode: llm/vlm) |
+| GET | `/v1/models` | List loaded models |
+| POST | `/v1/chat/completions` | Chat completion (streaming + non-streaming) |
+| GET | `/docs` | Swagger UI documentation |
+
+### Server Options
+
+Run `dashinfer_serve --help` for the full list. Key options:
+
+| Argument | Default | Description |
+|---|---|---|
+| `--model` | *(required)* | HuggingFace model path or ID |
+| `--mode` | `auto` | `auto` / `llm` / `vlm` |
+| `--port` | `8000` | Server port |
+| `--tensor-parallel` | `1` | Number of GPUs |
+| `--max-batch` | `32` | Max concurrent requests |
+| `--max-length` | `8192` | Max sequence length |
+| `--api-keys` | *(none)* | Comma-separated API keys |
+| `--vision-engine` | `tensorrt` | [VLM] `tensorrt` / `transformers` |
+
+For the full serving guide, see [DashInfer OpenAI API Server](../serving/serving_guide.md).

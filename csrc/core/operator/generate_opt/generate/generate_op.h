@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    generate_op.h
  */
 
@@ -20,7 +21,30 @@ class GenerateOp : public AsOperator {
   AsStatus RunOneBatch(GenerateContext* gen_ctx, int current_batch);
   AsStatus RunSample(RuntimeContext* runtime_ctx);
 
+  // GPU-only sampling: process_logits + TopK/TopP/Sample + logprobs.
+  // No sync, no D2H, no NCCL. Suitable for CUDA graph capture.
+  AsStatus RunSampleGPU(RuntimeContext* runtime_ctx);
+
+  // Post-processing after GPU sampling: NCCL bcast + D2H + CPU scatter.
+  AsStatus RunSamplePostProcess(RuntimeContext* runtime_ctx);
+
+  // Pipelined post-processing: split into 3 phases for async D2H.
+  // Phase 1: NCCL bcast + CopyToVars on main stream. Saves ptrs_host.
+  AsStatus RunSampleGPUPost(RuntimeContext* runtime_ctx);
+#ifdef ENABLE_CUDA
+  // Phase 2: Enqueue async D2H copy on d2h_stream (no sync).
+  AsStatus EnqueueSampleD2H(RuntimeContext* runtime_ctx,
+                             cudaStream_t d2h_stream);
+  // Phase 3: CPU scatter + UpdateProbs (call after D2H event sync).
+  AsStatus CompleteSampleD2H(RuntimeContext* runtime_ctx);
+#endif
+
+  // CUDA Graph support: update step-dependent buffers before graph replay.
+  AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) override;
+
  private:
+  // Saved state between pipelined phases
+  std::vector<int64_t*> saved_ptrs_host_;
   BatchGencfg batch_gencfg_;
   int rank_id_ = 0;
   int nrank_ = 1;
@@ -74,6 +98,17 @@ class GenerateOp : public AsOperator {
   std::unique_ptr<AsTensor> cur_len_list;
   std::unique_ptr<AsTensor> input_len_list;
   std::unique_ptr<AsTensor> suppress_repetition_in_generation_list;
+
+  // Packed buffer for batch gen config: all 12 per-batch arrays packed into
+  // one contiguous device tensor, updated with a single H2D memcpy.
+  // Layout: [topk(int) | topp(float) | temperature(float) |
+  //          rep_penalty(float) | pres_penalty(float) | freq_penalty(float) |
+  //          ngram(int) | min_len(int) | eos_id(int) |
+  //          cur_len(int) | input_len(int) | suppress_rep(int)]
+  // Each field is batch_size elements. Total: 12 * batch_size * 4 bytes.
+  static constexpr int kNumPackedFields = 12;
+  std::unique_ptr<AsTensor> packed_gencfg_device_;
+  std::vector<char> packed_gencfg_host_;
   void* topk_value_ptr_;
   void* topk_indice_ptr_;
   void* topp_value_ptr_;

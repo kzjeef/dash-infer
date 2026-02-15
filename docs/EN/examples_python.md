@@ -147,11 +147,17 @@ python performance_test_qwen_v15.py --device_ids 0 1 # test multi-NUMA performan
 
 > On CPUs with multiple NUMA nodes, please refer to [Single/Multi-NUMA Inference] (examples_python.md#L33) section for best performance.
 
-# 2_evaluation
+# Evaluation
 
-The code in the `<path_to_dashinfer>/examples/python/2_evaluation` directory is from [QwenLM/Qwen](https://github.com/QwenLM/Qwen/tree/main/eval). The original code uses transformers for inference. In this repository, the accuracy testing code substitutes the inference engine with DashInfer.
+## New: lm-evaluation-harness based regression testing
 
-For accuracy evaluation, please refer to [EVALUATION.md](../../examples/python/2_evaluation/EVALUATION.md).
+The recommended way to run accuracy evaluation is via the `lm-evaluation-harness` adapter in `tests/eval/`. This supports standard benchmarks (MMLU, GSM8K, HellaSwag, etc.) with automated regression detection. See [tests/eval/README.md](../../tests/eval/README.md) for details.
+
+## Legacy: Qwen-based evaluation scripts
+
+The legacy evaluation scripts (originally from [QwenLM/Qwen](https://github.com/QwenLM/Qwen/tree/main/eval)) have been moved to `tests/eval/legacy/`. These scripts use the older `EngineHelper` API and are hardcoded for Qwen-7B-Chat.
+
+For legacy accuracy evaluation, refer to [EVALUATION.md](../../tests/eval/legacy/cpu/EVALUATION.md).
 
 # 3_gradio
 
@@ -297,67 +303,131 @@ Running on local URL:  http://127.0.0.1:7860
 To create a public link, set `share=True` in `launch()`.
 ```
 
-# 4_fastchat
-[FastChat](https://github.com/lm-sys/FastChat) is an open-source platform designed for training, serving, and evaluating large language model chatbots. It facilitates integrating an inference engine backend into the platform in a worker-based manner, providing services compatible with the OpenAI API.
+# 4_openai_server
 
-In the [examples/python/4_fastchat/dashinfer_worker.py](../../examples/python/4_fastchat/dashinfer_worker.py) file, we supply a sample code demonstrating the implementation of a worker using FastChat and DashInfer. Users can readily substitute the default `fastchat.serve.model_worker` in the FastChat service component with `dashinfer_worker`, thereby achieving a solution that is not only compatible with the OpenAI API but also optimizes CPU usage for efficient inference.
+DashInfer provides a built-in OpenAI-compatible API server for both LLM and VLM models. No external dependencies like FastChat are needed.
 
-## Step 1: Install FastChat
+For the full guide, see [DashInfer OpenAI API Server](serving_design.md).
+
+## Install
+
 ```shell
-pip install "fschat[model_worker]"
+# LLM serving
+pip install "dashinfer[serving]"
+
+# LLM + VLM serving
+pip install "dashinfer[serving,vlm]"
 ```
 
-## Step 2: Start FastChat Services
+## Start the LLM Server
+
 ```shell
-python -m fastchat.serve.controller
-python -m fastchat.serve.openai_api_server --host localhost --port 8000
+dashinfer_serve --model Qwen/Qwen2.5-7B-Instruct
+
+# Multi-GPU
+dashinfer_serve --model Qwen/Qwen2.5-72B-Instruct --tensor-parallel 4
+
+# With API key authentication
+dashinfer_serve --model Qwen/Qwen2.5-7B-Instruct --api-keys mykey1,mykey2
 ```
 
-## Step 3: Launch dashinfer_worker
+## Start the VLM Server
+
 ```shell
-python dashinfer_worker.py --model-path qwen/Qwen-7B-Chat ../model_config/config_qwen_v10_7b.json
+# Auto-detected as VLM
+dashinfer_serve --model Qwen/Qwen2-VL-7B-Instruct
+
+# Force VLM mode with Transformers vision encoder
+dashinfer_serve --model Qwen/Qwen2-VL-7B-Instruct --mode vlm --vision-engine transformers
 ```
 
-## Step 4: Send HTTP Request via cURL to Access OpenAI API-Compatible Endpoint
+## LLM Request Examples
+
+### cURL
+
 ```shell
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Qwen-7B-Chat",
+    "model": "Qwen2.5-7B-Instruct",
     "messages": [{"role": "user", "content": "Hello! What is your name?"}]
   }'
 ```
 
-## Quick Start with Docker
-Furthermore, we provide a convenient Docker image, enabling rapid deployment of an HTTP service that integrates dashinfer_worker and is compatible with the OpenAI API. Execute the following command, ensuring to replace bracketed paths with actual paths:
+### Streaming
 
 ```shell
-docker run -d \
-    --network host \
-    -v <host_path_to_your_model>:<container_path_to_your_model> \
-    -v <host_path_to_dashinfer_json_config_file>:<container_path_to_dashinfer_json_config_file> \
-    dashinfer/fschat_ubuntu_x86:v1.2.1 \
-    <container_path_to_your_model> \
-    <container_path_to_dashinfer_json_config_file>
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen2.5-7B-Instruct",
+    "messages": [{"role": "user", "content": "Tell me a story"}],
+    "stream": true
+  }'
 ```
-- `<host_path_to_your_model>`: The path on the host where ModelScope/HuggingFace models reside.
-- `<container_path_to_your_model>`: The path within the container for mounting ModelScope/HuggingFace models.
-- `<host_path_to_dashinfer_json_config_file>`: The location of the DashInfer JSON configuration file on the host.
-- `<container_path_to_dashinfer_json_config_file>`: The destination path in the container for the DashInfer JSON configuration file.
-- The `-m` flag denotes the path to ModelScope/HuggingFace within the container, which is determined by the host-to-container path binding specified in `-v`. If this refers to a standard ModelScope/HuggingFace path (e.g., `qwen/Qwen-7B-Chat`), there's no need to bind the model path from the host; the container will automatically download the model for you.
 
-Below is an example of launching a Qwen-7B-Chat model service, with the default host set to localhost and the port to 8000.
+### Python (OpenAI SDK)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+response = client.chat.completions.create(
+    model="Qwen2.5-7B-Instruct",
+    messages=[{"role": "user", "content": "Explain quantum computing in 3 sentences."}],
+)
+print(response.choices[0].message.content)
+```
+
+## VLM Request Examples
+
+### cURL (Image Understanding)
+
 ```shell
-docker run -d \
-    --network host \
-    -v ~/.cache/modelscope/hub/qwen/Qwen-7B-Chat:/workspace/qwen/Qwen-7B-Chat  \
-    -v examples/python/model_config/config_qwen_v10_7b.json:/workspace/config_qwen_v10_7b.json \
-    dashinfer/fschat_ubuntu_x86:v1.2.1 \
-    /workspace/qwen/Qwen-7B-Chat \
-    /workspace/config_qwen_v10_7b.json
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen2-VL-7B-Instruct",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}},
+        {"type": "text", "text": "What is in this image?"}
+      ]
+    }],
+    "max_tokens": 512
+  }'
 ```
 
-You can also use [openai_chat.py](../../examples/python/4_fastchat/openai_chat.py) to test the chat client using the OpenAI API.
+### Python (OpenAI SDK)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+response = client.chat.completions.create(
+    model="Qwen2-VL-7B-Instruct",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": "https://example.com/photo.jpg"}},
+            {"type": "text", "text": "Describe this image."},
+        ],
+    }],
+)
+print(response.choices[0].message.content)
+```
+
+## Available Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Health check |
+| GET | `/v1/models` | List loaded models |
+| POST | `/v1/chat/completions` | Chat completion (streaming + non-streaming) |
+| GET | `/docs` | Swagger UI |
+
+Run `dashinfer_serve --help` for the full list of server options.
 
 # Model Configuration Files
 

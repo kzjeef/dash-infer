@@ -1,5 +1,6 @@
 /*!
  * Copyright (c) Alibaba, Inc. and its affiliates.
+ * Copyright (c) 2025-2026 DashInfer Team.
  * @file    rotary.cu
  */
 
@@ -425,6 +426,172 @@ template void RotaryMultimodalSections<hie::bfloat16>(
     int seq_len, int head, int size_per_head, int stride, int* positions,
     int mrope_size, int* mrope_section, cudaStream_t stream);
 #endif
+/*
+ * Fused QKV rotary kernel: one head per block, Q/K get RoPE, V is copied.
+ * Grid: batch * seq_len * (num_heads_q + num_heads_k + num_heads_v) blocks.
+ * Each block processes exactly size_per_head elements for one head.
+ * This replaces 3 separate RotaryOptEmbedding launches with 1 launch.
+ */
+template <typename T, int UNROLL, int BLOCK>
+__global__ void __launch_bounds__(BLOCK, 4)
+    rotary_opt_qkv_kernel(T* q_out, const T* q_in, int num_heads_q,
+                          T* k_out, const T* k_in, int num_heads_k,
+                          T* v_out, const T* v_in, int num_heads_v,
+                          const float* inv_freq, const int* batch_offset,
+                          int batch_size, int seq_len, int size_per_head,
+                          int* step_list, int qkv_stride, int xlogn,
+                          U32DivMod total_heads_div, U32DivMod seq_div,
+                          U32DivMod half_sph_div) {
+  // Decompose blockIdx: blockIdx.x = batch_seq_idx * total_heads + global_head
+  auto dm = total_heads_div.DivMod(blockIdx.x);
+  int batch_seq_idx = dm.div;
+  int global_head = dm.mod;
+
+  auto dm2 = seq_div.DivMod(batch_seq_idx);
+  int blk_batch_idx = dm2.div;
+  int blk_seq_idx = dm2.mod;
+
+  // Determine Q/K/V segment and local head index
+  const T* data_in;
+  T* data_out;
+  bool apply_rotary;
+  if (global_head < num_heads_q) {
+    int head = global_head;
+    data_in  = q_in  + batch_seq_idx * qkv_stride + head * size_per_head;
+    data_out = q_out + batch_seq_idx * qkv_stride + head * size_per_head;
+    apply_rotary = true;
+  } else if (global_head < num_heads_q + num_heads_k) {
+    int head = global_head - num_heads_q;
+    data_in  = k_in  + batch_seq_idx * qkv_stride + head * size_per_head;
+    data_out = k_out + batch_seq_idx * qkv_stride + head * size_per_head;
+    apply_rotary = true;
+  } else {
+    int head = global_head - num_heads_q - num_heads_k;
+    data_in  = v_in  + batch_seq_idx * qkv_stride + head * size_per_head;
+    data_out = v_out + batch_seq_idx * qkv_stride + head * size_per_head;
+    apply_rotary = false;
+  }
+
+  if (!apply_rotary) {
+    // V: just copy size_per_head elements
+    const int copy_iter = (size_per_head + BLOCK * UNROLL - 1) / (BLOCK * UNROLL);
+    for (int ld_idx = 0; ld_idx < copy_iter; ++ld_idx) {
+      int ld_offset = threadIdx.x * UNROLL + ld_idx * UNROLL * BLOCK;
+      if (ld_offset < size_per_head) {
+        *reinterpret_cast<float4*>(data_out + ld_offset) =
+            *reinterpret_cast<const float4*>(data_in + ld_offset);
+      }
+    }
+    return;
+  }
+
+  // Apply rotary embedding to one head
+  extern __shared__ char smem[];
+  float* smem_inv = reinterpret_cast<float*>(smem);
+  T* smem_in = reinterpret_cast<T*>(smem + (size_per_head / 2) * sizeof(float));
+
+  // Load inv_freq to shared memory
+  if (threadIdx.x < size_per_head / 8) {
+    int ld_inv_offset = threadIdx.x * 4;
+    *reinterpret_cast<float4*>(smem_inv + ld_inv_offset) =
+        *reinterpret_cast<const float4*>(inv_freq + ld_inv_offset +
+                                         blk_batch_idx * size_per_head / 2);
+  }
+
+  // Load input to shared memory
+  const int load_iter = (size_per_head + BLOCK * UNROLL - 1) / (BLOCK * UNROLL);
+  for (int ld_idx = 0; ld_idx < load_iter; ++ld_idx) {
+    int ld_offset = threadIdx.x * UNROLL + ld_idx * UNROLL * BLOCK;
+    if (ld_offset < size_per_head) {
+      *reinterpret_cast<float4*>(smem_in + ld_offset) =
+          *reinterpret_cast<const float4*>(data_in + ld_offset);
+    }
+  }
+  __syncthreads();
+
+  int offset = 0;
+  if (batch_offset != nullptr) {
+    offset = batch_offset[blk_batch_idx];
+  }
+  int pos = blk_seq_idx + step_list[blk_batch_idx] + offset;
+  float scale = 1.0f;
+  if (xlogn > 0 && pos > xlogn) {
+    scale = logf(pos) / logf(xlogn);
+  }
+
+  int inner_loop = (size_per_head + BLOCK - 1) / BLOCK;
+  for (int inner_idx = 0; inner_idx < inner_loop; ++inner_idx) {
+    int i = threadIdx.x + BLOCK * inner_idx;
+    if (i < size_per_head) {
+      float tmp = smem_inv[half_sph_div.Mod(i)] * pos;
+      float sin_ = __sinf(tmp);
+      float cos_ = __cosf(tmp);
+      float v1 = static_cast<float>(smem_in[i]) * cos_;
+      float v2;
+      if (i < (size_per_head / 2)) {
+        v2 = -1.f * static_cast<float>(smem_in[i + size_per_head / 2]) * sin_;
+      } else {
+        v2 = static_cast<float>(smem_in[i - size_per_head / 2]) * sin_;
+      }
+      data_out[i] = static_cast<T>((v1 + v2) * scale);
+    }
+  }
+}
+
+template <typename T>
+void RotaryOptEmbeddingQKV(
+    T* q_out, const T* q_in, int num_heads_q,
+    T* k_out, const T* k_in, int num_heads_k,
+    T* v_out, const T* v_in, int num_heads_v,
+    float* inv_freq, int* batch_offset,
+    int batch, int seq_len, int size_per_head,
+    int* step_list, int qkv_stride, int xlogn,
+    cudaStream_t stream) {
+  int packSize = GetPackSize(q_in);
+  const int thread_per_block = 128;
+  int total_heads = num_heads_q + num_heads_k + num_heads_v;
+  const int block_num = batch * seq_len * total_heads;
+  U32DivMod total_heads_div(total_heads);
+  U32DivMod seq_div(seq_len);
+  U32DivMod half_sph_div(size_per_head / 2);
+
+  if (packSize * sizeof(T) != 16) {
+    LOG(ERROR) << "In/Out ptr must be 16B aligned for RotaryOptEmbeddingQKV"
+               << std::endl;
+    return;
+  }
+  if (size_per_head % 8 != 0) {
+    LOG(ERROR) << "RotaryOptEmbeddingQKV only supports size_per_head % 8 == 0"
+               << std::endl;
+    return;
+  }
+
+  // Shared memory: inv_freq (size_per_head/2 floats) + input (size_per_head T)
+  int smem_size = size_per_head * sizeof(T) + (size_per_head / 2) * sizeof(float);
+
+  switch (packSize) {
+    case 8:
+      rotary_opt_qkv_kernel<T, 8, thread_per_block>
+          <<<block_num, thread_per_block, smem_size, stream>>>(
+              q_out, q_in, num_heads_q, k_out, k_in, num_heads_k,
+              v_out, v_in, num_heads_v, inv_freq, batch_offset,
+              batch, seq_len, size_per_head, step_list, qkv_stride,
+              xlogn, total_heads_div, seq_div, half_sph_div);
+      break;
+    case 4:
+      rotary_opt_qkv_kernel<T, 4, thread_per_block>
+          <<<block_num, thread_per_block, smem_size, stream>>>(
+              q_out, q_in, num_heads_q, k_out, k_in, num_heads_k,
+              v_out, v_in, num_heads_v, inv_freq, batch_offset,
+              batch, seq_len, size_per_head, step_list, qkv_stride,
+              xlogn, total_heads_div, seq_div, half_sph_div);
+      break;
+    default:
+      LOG(ERROR) << "No Kernel for RotaryOptEmbeddingQKV" << std::endl;
+      break;
+  }
+}
+
 template <typename T>
 void RotaryOptEmbedding(T* output, T* input, float* inv_freq, int* batch_offset,
                         int batch, int seq_len, int head, int size_per_head,
@@ -496,6 +663,14 @@ template void RotaryOptEmbedding<float>(float* output, float* input,
                                         int stride, int xlogn, int* positions,
                                         int mrope_size, int* mrope_section,
                                         cudaStream_t stream);
+template void RotaryOptEmbeddingQKV<float>(
+    float* q_out, const float* q_in, int num_heads_q,
+    float* k_out, const float* k_in, int num_heads_k,
+    float* v_out, const float* v_in, int num_heads_v,
+    float* inv_freq, int* batch_offset,
+    int batch, int seq_len, int size_per_head,
+    int* step_list, int qkv_stride, int xlogn,
+    cudaStream_t stream);
 template void RotaryPctEmbedding<float>(float* output, float* input,
                                         float* inv_freq, int* batch_offset,
                                         int batch, int seq_len, int head,
@@ -518,6 +693,14 @@ template void RotaryOptEmbedding<half>(half* output, half* input,
                                        int stride, int xlogn, int* positions,
                                        int mrope_size, int* mrope_section,
                                        cudaStream_t stream);
+template void RotaryOptEmbeddingQKV<half>(
+    half* q_out, const half* q_in, int num_heads_q,
+    half* k_out, const half* k_in, int num_heads_k,
+    half* v_out, const half* v_in, int num_heads_v,
+    float* inv_freq, int* batch_offset,
+    int batch, int seq_len, int size_per_head,
+    int* step_list, int qkv_stride, int xlogn,
+    cudaStream_t stream);
 template void RotaryEmbeddingHalfInner<half>(half* output, half* input,
                                              float* inv_freq, int* batch_offset,
                                              int batch, int seq_len, int head,
@@ -545,6 +728,14 @@ template void RotaryOptEmbedding<hie::bfloat16>(
     int* batch_offset, int batch, int seq_len, int head, int size_per_head,
     int* step_list, int stride, int xlogn, int* positions, int mrope_size,
     int* mrope_section, cudaStream_t stream);
+template void RotaryOptEmbeddingQKV<hie::bfloat16>(
+    hie::bfloat16* q_out, const hie::bfloat16* q_in, int num_heads_q,
+    hie::bfloat16* k_out, const hie::bfloat16* k_in, int num_heads_k,
+    hie::bfloat16* v_out, const hie::bfloat16* v_in, int num_heads_v,
+    float* inv_freq, int* batch_offset,
+    int batch, int seq_len, int size_per_head,
+    int* step_list, int qkv_stride, int xlogn,
+    cudaStream_t stream);
 template void RotaryEmbeddingHalfInner<hie::bfloat16>(
     hie::bfloat16* output, hie::bfloat16* input, float* inv_freq,
     int* batch_offset, int batch, int seq_len, int head, int size_per_head,

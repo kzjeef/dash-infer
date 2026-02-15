@@ -4,17 +4,16 @@
 
 OS: Linux
 
-Python: 3.8, 3.9, 3.10, 3.11
+Python: 3.10, 3.11, 3.12
 
 测试过的编译器版本:
 
-- gcc: 7.3.1, 11.4.0
-- arm compiler: 22.1, 24.04
+- gcc: 11.4.0
+- arm compiler: 24.04
 
 多NUMA推理，需要安装依赖`numactl`、`openmpi`，例如：
 
 - for Ubuntu: `apt-get install numactl libopenmpi-dev`
-- for CentOS: `yum install numactl openmpi-devel openssh-clients -y`
 
 > 对于多NUMA节点的CPU，即使只跑单NUMA，也建议安装以上依赖，否则可能会出现跨节点内存访问，无法保证性能达到最佳。
 
@@ -55,66 +54,24 @@ for CentOS:
 
 推荐使用预构建的docker image或参考`<path_to_dashinfer>/scripts/docker`下的dockerfile构建docker开发环境。
 
-拉取预构建的docker image:
+拉取预构建的docker image或从Dockerfile构建：
 
-- x86, ubuntu:
+- CUDA 开发环境 (Ubuntu 24.04 + CUDA 12.6 + Python 3.12):
 
 ```shell
-# python 3.8
-docker pull registry-1.docker.io/dashinfer/dev-ubuntu-22.04-x86:v1
+docker pull docker.cnb.cool/thinksrc/dashinfer/dev-ubuntu-cuda:latest
 
-# python 3.10
-docker pull registry-1.docker.io/dashinfer/dev-ubuntu-22.04-x86:v1_py310
+# 或者从Dockerfile构建:
+docker build -f scripts/docker/dev_ubuntu_cuda.Dockerfile -t dashinfer/dev-ubuntu-cuda:latest .
 ```
 
-- x86, centos:
+- CPU 开发环境 (Ubuntu 24.04 + Python 3.12):
 
 ```shell
-# python 3.8
-docker pull registry-1.docker.io/dashinfer/dev-centos7-x86:v1
+docker pull docker.cnb.cool/thinksrc/dashinfer/dev-x86-ubuntu:latest
 
-# python 3.10
-docker pull registry-1.docker.io/dashinfer/dev-centos7-x86:v1_py310
-```
-
-- arm, alinux:
-
-```shell
-# python 3.8
-docker pull registry-1.docker.io/dashinfer/dev-alinux-arm:v1
-
-# python 3.10
-docker pull registry-1.docker.io/dashinfer/dev-alinux-arm:v1_py310
-```
-
-- arm, centos:
-
-```shell
-# python 3.8
-docker pull registry-1.docker.io/dashinfer/dev-centos8-arm:v1
-
-# python 3.10
-docker pull registry-1.docker.io/dashinfer/dev-centos8-arm:v1_py310
-```
-
-或者从dockerfile构建docker image：
-
-```shell
-# if use podman
-docker build -f <path_to_dockerfile> --format=docker 
-
-# if use docker
-docker build -f <path_to_dockerfile> .
-```
-
-开发docker默认使用Python 3.8，如果需要构建不同python版本的docker image，可以增加此参数`--build-arg PY_VER=3.10`，例如python 3.10：
-
-```shell
-# if use podman
-docker build -f <path_to_dockerfile> --build-arg PY_VER=3.10 --format=docker 
-
-# if use docker
-docker build -f <path_to_dockerfile> --build-arg PY_VER=3.10 .
+# 或者从Dockerfile构建:
+docker build -f scripts/docker/dev_x86_ubuntu.Dockerfile -t dashinfer/dev-x86-ubuntu:latest .
 ```
 
 从docker image创建container：

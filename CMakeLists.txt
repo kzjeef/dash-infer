@@ -128,7 +128,11 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 #    add_definitions(-DCONFIG_OP_DEBUG)  # will print op forward, init, also sync after op forward.
 #    add_definitions(-DCONFIG_LOCK_DEBUG)  # will print mutex lock unlock
 else()
-    add_definitions(-DNVTX_DISABLE)
+    if(NOT DEFINED ENV{AS_ENABLE_NVTX})
+        add_definitions(-DNVTX_DISABLE)
+    else()
+        message(STATUS "NVTX enabled via AS_ENABLE_NVTX env var")
+    endif()
 endif()
 
 include(cmake/CheckGit.cmake)
@@ -137,12 +141,26 @@ add_definitions(-DALLSPARK_VERSION_MAJOR="${PROJECT_VERSION_MAJOR}")
 add_definitions(-DALLSPARK_VERSION_MINOR="${PROJECT_VERSION_MINOR}")
 add_definitions(-DALLSPARK_VERSION_PATCH="${PROJECT_VERSION_PATCH}")
 
-# 3rd dependency
-include(${CMAKE_BINARY_DIR}/conanbuildinfo.cmake)
-conan_basic_setup(TARGETS)
-
+# 3rd dependency (Conan 2.x: toolchain loaded via -DCMAKE_TOOLCHAIN_FILE)
 list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
+
 find_package(Protobuf REQUIRED)
+# Conan 2.x: ensure we use protoc from the Conan package, not the system one.
+# protobuf_PACKAGE_FOLDER_RELEASE is set by Conan's generated cmake files.
+if(protobuf_PACKAGE_FOLDER_RELEASE AND EXISTS "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc")
+    set(Protobuf_PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc" CACHE FILEPATH "" FORCE)
+    set(PROTOBUF_PROTOC_EXECUTABLE "${protobuf_PACKAGE_FOLDER_RELEASE}/bin/protoc" CACHE FILEPATH "" FORCE)
+    message(STATUS "Using Conan protoc: ${PROTOBUF_PROTOC_EXECUTABLE}")
+elseif(PROTOBUF_PROTOC_EXECUTABLE)
+    message(STATUS "Using protoc: ${PROTOBUF_PROTOC_EXECUTABLE}")
+endif()
+find_package(glog REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(GTest REQUIRED)
+if(ENABLE_MULTINUMA)
+    find_package(MPI REQUIRED)
+    find_package(gRPC REQUIRED)
+endif()
 
 # thirdparty
 set(INSTALL_LOCATION

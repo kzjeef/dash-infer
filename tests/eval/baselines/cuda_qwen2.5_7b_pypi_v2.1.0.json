@@ -1,0 +1,39 @@
+{
+  "description": "Baseline for Qwen2.5-7B-Instruct on CUDA (bfloat16, weight-only quant) using DashInfer v2.1.0 from PyPI. Measured 2026-02-15 on H200 GPU.",
+  "source": "docker: dashinfer/dev-ubuntu-cuda:latest (Ubuntu 24.04 + CUDA 12.6 + Python 3.10), dashinfer==2.1.0 from PyPI, lm_eval==0.4.11, transformers==4.57.6",
+  "config": {
+    "model_path": "Qwen/Qwen2.5-7B-Instruct",
+    "device": "cuda:0",
+    "data_type": "bfloat16",
+    "max_length": 4096,
+    "max_batch": 1,
+    "weight_only_quant": true
+  },
+  "results": {
+    "gsm8k": {
+      "exact_match,strict-match": 0.47,
+      "exact_match_stderr,strict-match": 0.0354,
+      "exact_match,flexible-extract": 0.46,
+      "exact_match_stderr,flexible-extract": 0.0353,
+      "num_samples": 200,
+      "elapsed_seconds": 248.9
+    },
+    "humaneval": {
+      "pass@1,create_test": 0.6159,
+      "pass@1_stderr,create_test": 0.0381,
+      "num_samples": 164,
+      "elapsed_seconds": 566.4
+    }
+  },
+  "reference_scores": {
+    "description": "Official Qwen2.5-7B-Instruct scores for comparison",
+    "gsm8k_5shot_flexible": 0.7286,
+    "humaneval_pass_at_1": 0.610,
+    "notes": "GSM8K gap (47% vs 73%) likely due to few-shot handling differences. HumanEval pass@1 (61.6%) matches official report closely."
+  },
+  "thresholds": {
+    "gsm8k/exact_match,strict-match": 0.05,
+    "gsm8k/exact_match,flexible-extract": 0.05,
+    "humaneval/pass@1,create_test": 0.05
+  }
+}

@@ -28,3 +28,4 @@ log*
 *.csv
 *.as*
 *.egg-info
+tests/eval/__pycache__/

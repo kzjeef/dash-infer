@@ -1,5 +1,6 @@
 '''
  Copyright (c) Alibaba, Inc. and its affiliates.
+ Copyright (c) 2025-2026 DashInfer Team.
  @file    setup.py
 '''
 import os
@@ -193,46 +194,45 @@ class CMakeBuild(build_ext):
         else:
             libcxx_setting = "libstdc++"
 
-        conanfile = "conanfile"
-        openmpi_rebuild  = ""
-        if enable_multinuma == "ON":
-            conanfile += "_openmpi"
-            openmpi_rebuild = "-b openmpi -b bison"
+        # Conan 2.x: single conanfile.py with options
+        conan_profile = "conanprofile.x86_64"
+        conan_options = ""
         if is_arm:
-            conanfile += "_arm"
-        conanfile += ".txt"
+            conan_profile = "conanprofile_armclang.aarch64"
+            conan_options += " -o arm=True"
+        if enable_multinuma == "ON":
+            conan_options += " -o enable_multinuma=True"
 
-        conan_install_arm = Template(
-            "conan profile new dashinfer_compiler_profile --detect --force\n" +
-            "cp -f {{cwd_parent}}/conan/conanprofile_armclang.aarch64 ~/.conan/profiles/dashinfer_compiler_profile\n" +
-            "cp -r {{cwd_parent}}/conan/settings_arm.yml ~/.conan/settings.yml\n" +
-            "conan profile update settings.compiler.libcxx={{libcxx_setting}} dashinfer_compiler_profile\n" +
-            "conan install {{cwd_parent}}/conan/{{conanfile}} -pr dashinfer_compiler_profile -b missing {{openmpi_rebuild}} -b protobuf -b gtest -b glog"
-        ).render(libcxx_setting=libcxx_setting, cwd_parent=str(cwd.parent), conanfile=conanfile, openmpi_rebuild=openmpi_rebuild)
-
-        conan_install_other = Template(
-            "conan profile new dashinfer_compiler_profile --detect --force\n" +
-            "conan profile update settings.compiler.libcxx={{libcxx_setting}} dashinfer_compiler_profile\n" +
-            "conan install {{cwd_parent}}/conan/{{conanfile}} -pr dashinfer_compiler_profile -b missing {{openmpi_rebuild}} -b protobuf -b gtest -b glog"
-        ).render(libcxx_setting=libcxx_setting, cwd_parent=str(cwd.parent), conanfile=conanfile, openmpi_rebuild=openmpi_rebuild)
-
-        conan_install_cmd = conan_install_other
+        conan_install_cmd = Template(
+            "conan install {{cwd_parent}}/conan"
+            " -pr:h {{cwd_parent}}/conan/{{conan_profile}}"
+            " -s compiler.libcxx={{libcxx_setting}}"
+            " -of ."
+            " --build=missing"
+            " --build=protobuf"
+            " --build=gtest"
+            " --build=glog"
+            "{{conan_options}}"
+        ).render(
+            libcxx_setting=libcxx_setting,
+            cwd_parent=str(cwd.parent),
+            conan_profile=conan_profile,
+            conan_options=conan_options,
+        )
 
         export_path_cmd = ""
         if is_arm:
-            # need manual export on arm
             export_path_cmd = "export PATH=$PATH:" + str(
                 cwd.absolute()) + "/" + self.build_temp + "/bin"
-            conan_install_cmd = conan_install_arm
 
         # because it's require a conan virtual env, so we must write a shell to execute it.
         bash_template = Template(
             '#!/bin/bash -x\n' + 'gcc --version\n' + 'set -e\n'
             #+ '{{conan_install_cmd}}\n'  # uncomment this line if you want to clean rebuild.
             +
-            'if [ ! -f "activate.sh" ]; \nthen {{conan_install_cmd}};\n fi\n'  # conan install in here to make sure protoc and protobuf have same version.
-            + 'source ./activate.sh\n' + '{{export_path_cmd}}\n' +
-            'cmake --version\n' + 'cmake {{dir}} {{cmake_args}} \n' +
+            'if [ ! -f "conan_toolchain.cmake" ]; \nthen {{conan_install_cmd}};\n fi\n'  # conan install in here to make sure protoc and protobuf have same version.
+            + 'source ./conanbuild.sh\n' + '{{export_path_cmd}}\n' +
+            'cmake --version\n' + 'cmake {{dir}} -DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake {{cmake_args}} \n' +
             'cmake --build . --target install -j16\n')
 
         with open('.python_build.sh', 'w') as f:
@@ -254,7 +254,7 @@ class CMakeBuild(build_ext):
 
 
 setup(name=f"{py_pkg_name}",
-      version=os.getenv("AS_RELEASE_VERSION", "2.0.0"),
+      version=os.getenv("AS_RELEASE_VERSION", "3.0.0"),
       author="DashInfer team",
       author_email="Dash-Infer@alibabacloud.com",
       description="DashInfer is a native inference engine for Pre-trained Large Language Models (LLMs) developed by Tongyi Laboratory.",
@@ -263,15 +263,26 @@ setup(name=f"{py_pkg_name}",
           'License :: OSI Approved :: Apache Software License',
           'Operating System :: OS Independent',
           'Programming Language :: Python :: 3',
-          'Programming Language :: Python :: 3.8',
           'Programming Language :: Python :: 3.10',
+          'Programming Language :: Python :: 3.11',
+          'Programming Language :: Python :: 3.12',
       ],
       license="Apache License 2.0",
       packages=find_namespace_packages(include=package_include_group),
       ext_modules=[CMakeExtension("_allspark")],
       cmdclass={"build_ext": CMakeBuild},
       setup_requires=["jinja2"],
-      install_requires=["transformers>=4.40.0", "torch", "ruamel.yaml"],
+      install_requires=["transformers>=4.40.0", "torch", "accelerate>=1.1.0", "ruamel.yaml"],
+      extras_require={
+          "serving": ["fastapi>=0.100.0", "uvicorn[standard]>=0.20.0"],
+          "vlm": ["dashinfer-vlm"],
+          "all": ["fastapi>=0.100.0", "uvicorn[standard]>=0.20.0", "dashinfer-vlm"],
+      },
+      entry_points={
+          "console_scripts": [
+              "dashinfer_serve = dashinfer.serving.__main__:main",
+          ],
+      },
       zip_safe=False,
-      python_requires=">=3.8",
+      python_requires=">=3.10",
       extra_compile_args=["-O3"])
