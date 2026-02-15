@@ -111,9 +111,7 @@ AsStatus MLAAttnOp::Forward(RuntimeContext* runtime_ctx) {
 }
 
 AsStatus MLAAttnOp::Alloc(RuntimeContext* runtime_ctx) {
-  // MLA uses the same paged KV cache infrastructure as span-attention.
-  // Cache allocation is handled by the virtual_k_cache / virtual_v_cache
-  // in GenerateContext, with kv_cache_dim() elements per token per head.
+#if ENABLE_SPAN_ATTENTION
   const int max_seq_len = ctx_->GetModelMaxLength();
   const int span_len = ctx_->GetCacheSpanSize();
 
@@ -130,6 +128,9 @@ AsStatus MLAAttnOp::Alloc(RuntimeContext* runtime_ctx) {
       (void)gen_ctx->virtual_v_cache->GetCache(layer_num_, cache_increment);
     }
   }
+#else
+  LOG(WARNING) << "MLAAttnOp::Alloc: span attention disabled";
+#endif
   return AsStatus::ALLSPARK_SUCCESS;
 }
 

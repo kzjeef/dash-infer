@@ -1600,7 +1600,7 @@ AsStatus AsModel::GenerateContinueDecoder() {
     if (!pending_d2h_)
 #endif
     {
-      { Tracer __t_pg("PostGraph", 6);
+      { TracerLog __t_pg(ctx_->GetDeviceType(), "PostGraph", 6);
       for (auto& op : graph_ops_["post_graph"]) {
         AsStatus status = op->CallReshape(runtime_ctx_.get());
         if (status != AsStatus::ALLSPARK_SUCCESS) {
@@ -1629,7 +1629,7 @@ AsStatus AsModel::GenerateContinueDecoder() {
       }  // end PostGraph Tracer scope
 
       // clean up the finished request
-      { Tracer __t_fc("FinishCheck", 3);
+      { TracerLog __t_fc(ctx_->GetDeviceType(), "FinishCheck", 3);
         for (int i = runtime_ctx_->GetGenCtxListSize() - 1; i >= 0; i--) {
           if (runtime_ctx_->GetGenCtx(i)->finish) {
             auto ret =

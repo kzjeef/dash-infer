@@ -79,18 +79,36 @@ AsStatus GemmOpSpr::InitV2(const OperatorProto& op_proto,
     AS_CHECK_STATUS(GemmOpBase::InitV2(
         op_proto, ctx, weights_map, weights_buffer, tensor_map, runtime_ctx));
 
-    // use intrinsic bf16 gemm
+    // use intrinsic bf16 gemm — store UNPACKED bf16 weights
     AsTensor* mutable_weight = const_cast<AsTensor*>(weights_[0]);
     Shape weight_shape = weights_[0]->GetShape();
 
-    // fp32 -> bf16
+    // fp32 -> bf16 (no packing, use ig_bgemm_f32bf16f32 unpacked in Forward)
     auto as_weight_bf16 = std::make_unique<AsTensor>(
         weights_[0]->GetName() + "_bf16", weights_[0]->GetDeviceType(),
         DataType::BFLOAT16, weights_[0]->GetDataMode(), weight_shape);
 
     float* wei_fp32_ptr = (float*)mutable_weight->GetDataPtr();
-    bfloat16_t* wei_bf16_ptr = (bfloat16_t*)as_weight_bf16->GetDataPtr();
-    convert_datatype(wei_fp32_ptr, wei_bf16_ptr, weight_shape.Count(), ctx);
+    // Direct f32→bf16 conversion using bit manipulation (truncate lower 16 bits)
+    // This avoids type conversion issues between different bfloat16_t implementations.
+    uint16_t* wei_bf16_raw = (uint16_t*)as_weight_bf16->GetDataPtr();
+    int64_t num_elements = weight_shape.Count();
+    const CPUContext* cpu_ctx_init = static_cast<const CPUContext*>(&ctx);
+    int num_threads = cpu_ctx_init->GetNumThread();
+    int64_t per_thread = (num_elements + num_threads - 1) / num_threads;
+    cpu::parallel_for(num_threads, [&](int n) {
+      int64_t start = n * per_thread;
+      int64_t end = std::min(start + per_thread, num_elements);
+      for (int64_t i = start; i < end; i++) {
+        // BF16 = upper 16 bits of FP32 (with rounding)
+        uint32_t fp32_bits;
+        memcpy(&fp32_bits, &wei_fp32_ptr[i], sizeof(uint32_t));
+        // Round to nearest even: add 0x7FFF + bit[16] for rounding
+        uint32_t rounding_bias = (fp32_bits >> 16) & 1;
+        fp32_bits += 0x7FFF + rounding_bias;
+        wei_bf16_raw[i] = (uint16_t)(fp32_bits >> 16);
+      }
+    });
 
     auto as_weight_pack = std::make_unique<AsTensor>(
         weights_[0]->GetName() + "_bf16_pack", *as_weight_bf16);
@@ -182,11 +200,10 @@ AsStatus GemmOpSpr::Forward(RuntimeContext* runtime_ctx) {
 #else
 #ifdef ENABLE_BF16
     // use intrinsic bf16 gemm
+    // use intrinsic bf16 gemm (packed weights)
     const AsTensor* weight = static_cast<const AsTensor*>(weights_[0]);
     void* bias = (weights_.size() == 2) ? weights_[1]->GetDataPtr() : nullptr;
     if (bias) {
-      // either activation or binary_type is supported
-      // bias is not supported with binary_type MUL
       if (activation_ == UnaryType::RELU) {
         ig_bgemm_f32bf16f32_compute_biasadd_relu(
             transB_, m_, n_, k_, 1.0f, (const float*)in, lda_,
@@ -207,7 +224,6 @@ AsStatus GemmOpSpr::Forward(RuntimeContext* runtime_ctx) {
             (const float*)bias);
       }
     } else {
-      // either activation or binary_type is supported
       if (activation_ == UnaryType::SILU) {
         ig_bgemm_f32bf16f32_compute_silu(
             transB_, m_, n_, k_, 1.0f, (const float*)in, lda_,

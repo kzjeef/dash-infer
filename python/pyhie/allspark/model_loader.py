@@ -929,7 +929,6 @@ class HuggingFaceModel(LLM):
                                    .max_length(max_context_length)
                                    .max_batch(max_batch)
                                    )
-            return runtime_cfg_builder
         else:
             runtime_cfg_builder = (AsModelRuntimeConfigBuilder()
                                    .model_name(engine_model_name)
@@ -938,7 +937,13 @@ class HuggingFaceModel(LLM):
                                    .max_length(max_context_length)
                                    .max_batch(max_batch)
                                    )
-            return runtime_cfg_builder
+
+        # TODO: Enable BF16 auto-detection after fixing BF16 decode crash
+        # from .engine import TargetDevice as _TD
+        # if device_type in (_TD.CPU, _TD.CPU_NUMA, "CPU", "cpu"):
+        #     runtime_cfg_builder.matmul_precision("auto")
+
+        return runtime_cfg_builder
 
     def free_model(self):
         "free all stored model file to save memory."

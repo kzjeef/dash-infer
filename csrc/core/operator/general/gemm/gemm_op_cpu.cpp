@@ -83,18 +83,19 @@ AsStatus GemmOpCPU::Reshape(RuntimeContext* runtime_ctx) {
 
   const CPUContext* cpu_ctx = static_cast<const CPUContext*>(ctx_);
   auto eng = DNNLEngine::GetInstance().GetEngine();
-  auto dt = weight_data_type_ == DataType::BFLOAT16 ? memory::data_type::bf16
-                                                    : memory::data_type::f32;
-  memory::desc x_desc({m_, k_}, dt, memory::dims{lda_, 1});
+  auto w_dt = weight_data_type_ == DataType::BFLOAT16 ? memory::data_type::bf16
+                                                      : memory::data_type::f32;
+  // For BF16 oneDNN matmul, both src and weights must be bf16.
+  // The actual f32 input will be reordered to bf16 in Forward().
+  memory::desc x_desc({m_, k_}, w_dt, memory::dims{lda_, 1});
   memory::desc y_desc({m_, n_}, memory::data_type::f32, memory::dims{n_, 1});
-  memory::desc w_desc({k_, n_}, dt, tag::any);
-
-  if (reshape_cnt >= 2) {
-    // Prevent repeated reorder operations
-    w_desc = dnnl_op_ctx_->ins_[1]->get_desc();
-  } else {
-    reshape_cnt++;
-  }
+  // Use explicit strides matching InitV2 instead of tag::any.
+  // tag::any allows oneDNN to reorder weights to an internal blocked format,
+  // but this reorder produces incorrect results for certain matrix shapes
+  // (observed with both oneDNN v3.2 and v3.7).
+  memory::dims w_stride =
+      transB_ ? memory::dims{1, ldb_} : memory::dims{ldb_, 1};
+  memory::desc w_desc({k_, n_}, w_dt, w_stride);
 
   memory::desc b_desc;
   if (weights_.size() == 2) {
@@ -181,6 +182,7 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
   void* in = in_tensor->GetDataPtr();
   void* out = tensor_map_->at(out_names_[0])->GetDataPtr();
   void* bias = (weights_.size() == 2) ? weights_[1]->GetDataPtr() : nullptr;
+
   void* bin_in = (in_names_.size() == 2)
                      ? tensor_map_->at(in_names_[1])->GetDataPtr()
                      : nullptr;
