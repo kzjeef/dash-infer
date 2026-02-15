@@ -91,10 +91,22 @@ AsModel::AsModel(const std::string& model_type)
   all_request_map_.reserve(1000);
 
 #ifdef ENABLE_CUDA
-  cuda_graph_enabled_ =
-      EnvVarConfig::GetInt("ALLSPARK_CUDA_GRAPH", 0) != 0;
-  if (cuda_graph_enabled_) {
-    LOG(INFO) << "CudaGraph: enabled via ALLSPARK_CUDA_GRAPH env var";
+  // Execute mode: default CudaGraph for CUDA.
+  // Env var ALLSPARK_EXECUTE_MODE=eager|graph overrides.
+  {
+    execute_mode_ = AsExecuteMode::CudaGraph;
+    const char* env_val = std::getenv("ALLSPARK_EXECUTE_MODE");
+    if (env_val != nullptr) {
+      std::string mode_str(env_val);
+      if (mode_str == "eager" || mode_str == "0") {
+        execute_mode_ = AsExecuteMode::Eager;
+      }
+      LOG(INFO) << "ExecuteMode: "
+                << (execute_mode_ == AsExecuteMode::CudaGraph ? "CudaGraph" : "Eager")
+                << " (via ALLSPARK_EXECUTE_MODE)";
+    } else {
+      LOG(INFO) << "ExecuteMode: CudaGraph (default)";
+    }
   }
   decode_pipeline_enabled_ =
       EnvVarConfig::GetInt("ALLSPARK_DECODE_PIPELINE", 0) != 0;
@@ -1245,12 +1257,8 @@ AsStatus AsModel::StopRequest(const std::string& request_id) {
     LOG(INFO) << "Stop request with request id: " << request_id;
   }
 #ifdef ENABLE_CUDA
-  // Batch size changed — invalidate CUDA graph cache since tensor shapes
-  // (and potentially addresses) will change after reshape.
-  if (cuda_graph_enabled_ && !cuda_graph_plans_.empty()) {
-    DLOG(INFO) << "CudaGraph: invalidating cache due to batch size change";
-    CudaGraphClear();
-  }
+  // With batch-size bucketing, graph plans are keyed by power-of-2 buckets
+  // and reused across different actual batch sizes. No invalidation needed.
 #endif
   if (runtime_ctx_->GetGenCtxListSize() > 0) {
     for (AsOperator* op : topo_ops_) {
@@ -1597,26 +1605,26 @@ AsStatus AsModel::GenerateContinueDecoder() {
 #ifdef ENABLE_CUDA
       // Piecewise CUDA Graph: capture graph-safe operator segments,
       // run attention/embedding eagerly between segments.
-      if (cuda_graph_enabled_) {
-        // Use exact batch_size as cache key (not bucketed) to ensure
-        // captured graph dimensions match actual tensor shapes.
-        if (!cuda_graph_plans_.count(batch_size)) {
-          // First decode at this batch size — build plan (eager + capture)
-          auto status = CudaGraphBuildPlan(batch_size);
-          if (status != AsStatus::ALLSPARK_SUCCESS) {
-            LOG(WARNING) << "CudaGraph: plan build failed for batch "
-                         << batch_size << ", falling back to eager";
-          } else {
-            used_cuda_graph = true;
-          }
-        } else {
-          // Replay piecewise plan
+      if (execute_mode_ == AsExecuteMode::CudaGraph) {
+        int bucket = CudaGraphBatchBucket(batch_size);
+        if (cuda_graph_plans_.count(bucket)) {
+          // Replay cached plan for this bucket
           auto status = CudaGraphRunPiecewise(runtime_ctx_.get());
           if (status != AsStatus::ALLSPARK_SUCCESS) {
             LOG(ERROR) << "CudaGraph: piecewise run failed";
             return ErrorProcess(status);
           }
           used_cuda_graph = true;
+        } else {
+          // First decode at this bucket — eager forward + capture
+          auto status = CudaGraphBuildPlan(bucket);
+          if (status != AsStatus::ALLSPARK_SUCCESS) {
+            LOG(WARNING) << "CudaGraph: plan build failed for bucket "
+                         << bucket << " (batch=" << batch_size
+                         << "), falling back to eager";
+          } else {
+            used_cuda_graph = true;
+          }
         }
       }
       if (!used_cuda_graph)
@@ -1667,8 +1675,9 @@ AsStatus AsModel::GenerateContinueDecoder() {
     // (process_logits + TopK/TopP/Sample + logprobs) to eliminate ~13
     // kernel launch overheads per decode step.
     bool used_gen_graph = false;
-    if (used_cuda_graph && cuda_graph_plans_.count(batch_size)) {
-      auto& plan = cuda_graph_plans_[batch_size];
+    int gen_bucket = CudaGraphBatchBucket(batch_size);
+    if (used_cuda_graph && cuda_graph_plans_.count(gen_bucket)) {
+      auto& plan = cuda_graph_plans_[gen_bucket];
       auto cuda_ctx = dynamic_cast<const CUDAContext*>(ctx_);
       cudaStream_t stream = cuda_ctx->GetStream();
 
@@ -2434,6 +2443,12 @@ AsStatus AsModel::CudaGraphBuildPlan(int batch_size) {
     if (status != AsStatus::ALLSPARK_SUCCESS) return status;
   }
 
+  // Sync all ranks before capture — NCCL capture is collective,
+  // all ranks must enter capture simultaneously.
+  if (graph_launch_barrier_) {
+    graph_launch_barrier_->wait();
+  }
+
   // Step 2: Build piecewise plan — identify graph-safe segments
   CudaGraphPlan plan;
   int seg_start = -1;
@@ -2505,8 +2520,9 @@ AsStatus AsModel::CudaGraphBuildPlan(int batch_size) {
 
 AsStatus AsModel::CudaGraphRunPiecewise(RuntimeContext* runtime_ctx) {
   int batch_size = runtime_ctx->GetGenCtxListSize();
+  int bucket = CudaGraphBatchBucket(batch_size);
 
-  auto it = cuda_graph_plans_.find(batch_size);
+  auto it = cuda_graph_plans_.find(bucket);
   if (it == cuda_graph_plans_.end()) {
     return AsStatus::ALLSPARK_RUNTIME_ERROR;
   }
@@ -2544,6 +2560,11 @@ AsStatus AsModel::CudaGraphRunPiecewise(RuntimeContext* runtime_ctx) {
       auto& seg = plan.segments[seg_idx];
       if (seg.exec) {
         util::Timer t_launch;
+        // For multi-GPU with NCCL inside graph: all ranks must launch
+        // simultaneously. Barrier ensures synchronized cudaGraphLaunch.
+        if (graph_launch_barrier_) {
+          graph_launch_barrier_->wait();
+        }
         { Tracer __t_gl("GraphLaunch", 1);
           cudaGraphLaunch(seg.exec, stream);
         }

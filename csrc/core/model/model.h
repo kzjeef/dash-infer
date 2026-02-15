@@ -31,9 +31,39 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
+#include <atomic>
 #include <vector>
 
 namespace allspark {
+
+// Simple spin barrier for synchronizing CUDA graph launches across ranks.
+// All ranks call wait() before cudaGraphLaunch to ensure synchronized launch.
+class SpinBarrier {
+ public:
+  explicit SpinBarrier(int num_threads)
+      : count_(num_threads), num_threads_(num_threads), generation_(0) {}
+
+  void wait() {
+    int gen = generation_.load(std::memory_order_acquire);
+    if (count_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      // Last thread to arrive — reset counter and advance generation
+      count_.store(num_threads_, std::memory_order_relaxed);
+      generation_.fetch_add(1, std::memory_order_release);
+    } else {
+      // Spin until generation advances
+      while (generation_.load(std::memory_order_acquire) == gen) {
+        // Yield to reduce CPU waste
+        std::this_thread::yield();
+      }
+    }
+  }
+
+ private:
+  std::atomic<int> count_;
+  int num_threads_;
+  std::atomic<int> generation_;
+};
 
 class ModelWeightHandler;
 class WeightManager;
@@ -78,6 +108,9 @@ class AsModel {
   virtual AsStatus AllocDecoderMemory(int pending_num, int64_t min_free_count,
                                       int& pres_frame);
   virtual AsStatus Warmup(int64_t bytes_available, int64_t bytes_runtime);
+  AsStatus CudaGraphPreCapture(int max_batch,
+                               const std::vector<int>& user_batch_sizes = {});
+  void CudaGraphClear();
   virtual int64_t GetAvailableMemoryBytes();
   virtual int64_t GetOccupiedMemoryBytes();
   virtual int64_t GetTotalMemoryBytes();
@@ -105,6 +138,9 @@ class AsModel {
   void SetRank(int rank, int nranks) {
     rank_ = rank;
     nranks_ = nranks;
+  }
+  void SetGraphLaunchBarrier(std::shared_ptr<SpinBarrier> barrier) {
+    graph_launch_barrier_ = barrier;
   }
   RankInfo GetRankInfo() { return RankInfo(rank_, nranks_); }
   int GetRankId() { return rank_; }
@@ -235,6 +271,7 @@ class AsModel {
   std::unordered_map<std::string, std::shared_ptr<Request>> all_request_map_;
   int rank_ = 0;
   int nranks_ = 1;
+  std::shared_ptr<SpinBarrier> graph_launch_barrier_;  // cross-rank sync for NCCL graph launch
   bool is_prefill_ = true;
 
 #if ENABLE_SPAN_ATTENTION
@@ -266,12 +303,11 @@ class AsModel {
     bool gen_graph_captured = false;
   };
 
-  void CudaGraphClear();
   AsStatus CudaGraphBuildPlan(int batch_size);
   AsStatus CudaGraphRunPiecewise(RuntimeContext* runtime_ctx);
   static int CudaGraphBatchBucket(int batch_size);
 
-  bool cuda_graph_enabled_ = false;
+  AsExecuteMode execute_mode_ = AsExecuteMode::Eager;
   // Map from batch-size bucket → piecewise execution plan
   std::unordered_map<int, CudaGraphPlan> cuda_graph_plans_;
 

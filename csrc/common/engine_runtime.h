@@ -272,6 +272,7 @@ inline static std::string to_string(const allspark::GenerateConfig& gen_cfg) {
   os << "no_repeat_ngram_size: " << gen_cfg.no_repeat_ngram_size << ", ";
   os << "logprobs: " << gen_cfg.logprobs << ", ";
   os << "top_logprobs: " << gen_cfg.top_logprobs << ", ";
+  os << "prompt_logprobs: 0, ";
   os << "min_length: " << gen_cfg.min_length << ", ";
   os << "max_length: " << gen_cfg.max_length << ", ";
   os << "lora_name: " << gen_cfg.lora_name << ", ";

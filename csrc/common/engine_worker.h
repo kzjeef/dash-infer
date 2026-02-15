@@ -60,6 +60,14 @@ class Worker {
   AsStatus AllocDecoderMemory(int pending_num, int64_t min_free_count,
                               int& pres_frame);
   AsStatus Warmup(int64_t bytes_available, int64_t bytes_runtime);
+  AsStatus CudaGraphPreCapture(int max_batch,
+                               const std::vector<int>& user_batch_sizes = {}) {
+    return model_->CudaGraphPreCapture(max_batch, user_batch_sizes);
+  }
+  void CudaGraphClear() { model_->CudaGraphClear(); }
+  void SetGraphLaunchBarrier(std::shared_ptr<SpinBarrier> barrier) {
+    model_->SetGraphLaunchBarrier(barrier);
+  }
   int64_t GetAvailableMemoryBytes();
   int64_t GetOccupiedMemoryBytes();
   int64_t GetTotalMemoryBytes();

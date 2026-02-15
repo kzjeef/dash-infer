@@ -41,6 +41,11 @@ class GenerateOp : public AsOperator {
   AsStatus UpdateGraphParams(RuntimeContext* runtime_ctx) override;
 
  private:
+  // Compute prompt (prefill) logprobs for all token positions.
+  // Called during prefill when gen_cfg.prompt_logprobs > 0.
+  // Uses the full-sequence logits tensor [1, seq_len, vocab_size] and stores
+  // per-position top-K logprobs + actual-token logprob into the Request.
+  AsStatus ComputePromptLogprobs(RuntimeContext* runtime_ctx);
   // Saved state between pipelined phases
   std::vector<int64_t*> saved_ptrs_host_;
   BatchGencfg batch_gencfg_;
@@ -61,6 +66,8 @@ class GenerateOp : public AsOperator {
   int eos_token_id_ = -1;
   int min_length_ = 10;
   bool need_logprobs_ = false;
+  bool need_prompt_logprobs_ = false;
+  int prompt_logprobs_k_ = 0;  // top-K for prompt logprobs
   /* deprecated basic params
   int k_=1;
   */
@@ -77,6 +84,11 @@ class GenerateOp : public AsOperator {
   int max_k_ = -1;
   std::unique_ptr<AsTensor> logprobs_;
   std::unique_ptr<AsTensor> token_logprobs_;
+  // Temporary buffers for prompt logprobs (allocated on demand during prefill)
+  std::unique_ptr<AsTensor> prompt_logprobs_buf_;       // [seq_len, vocab_size]
+  std::unique_ptr<AsTensor> prompt_token_logprobs_buf_; // [seq_len]
+  std::unique_ptr<AsTensor> prompt_topk_values_buf_;    // [seq_len, top_k]
+  std::unique_ptr<AsTensor> prompt_topk_indices_buf_;   // [seq_len, top_k]
   std::unique_ptr<AsTensor> topk_list_;
   std::unique_ptr<AsTensor> topp_list_;
   std::unique_ptr<AsTensor> temperature_list_;

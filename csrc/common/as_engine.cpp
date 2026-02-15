@@ -723,6 +723,20 @@ AsStatus AsEngineImpl::BuildModel(
 
   model_irs_[model_name] = std::move(model_ir);
 
+#ifdef ENABLE_CUDA
+  // Set up cross-rank barrier for synchronized CUDA graph capture/launch.
+  // Only needed for multi-GPU (nranks_ > 1).
+  if (nranks_ > 1) {
+    auto barrier = std::make_shared<SpinBarrier>(nranks_);
+    for (int i = 0; i < nranks_; ++i) {
+      workers_[i]->SetGraphLaunchBarrier(barrier);
+      workers_decode_[i]->SetGraphLaunchBarrier(barrier);
+    }
+    LOG(INFO) << "CudaGraph: set up cross-rank SpinBarrier for " << nranks_
+              << " ranks";
+  }
+#endif
+
   return build_status;
 }
 
@@ -1317,7 +1331,27 @@ AsStatus AsEngineImpl::WarmupModel(const char* model_name) {
   auto ret =
       WarmupModelInternal_(model_name, min_bytes_available, fake_lora_names);
   UnloadFakeLoras(model_name, fake_lora_names);
-  return ret;
+
+  if (ret != AsStatus::ALLSPARK_SUCCESS) {
+    return ret;
+  }
+
+#ifdef ENABLE_CUDA
+  // Clear graphs captured during warmup (they have stale buffer state).
+  // Graphs will be lazily re-captured on first real decode step.
+  if (device_ctx_->GetDeviceType() == DeviceType::CUDA) {
+    ExpandRankThreadPool();
+    for (int i = 0; i < nranks_; ++i) {
+      threadpool_->enqueue(i, [this, i]() -> AsStatus {
+        workers_decode_[i]->CudaGraphClear();
+        return AsStatus::ALLSPARK_SUCCESS;
+      }).get();
+    }
+    LOG(INFO) << "warm-up: cleared warmup CUDA graphs";
+  }
+#endif
+
+  return AsStatus::ALLSPARK_SUCCESS;
 }
 
 AsStatus AsEngineImpl::StartModel(const char* model_name) {

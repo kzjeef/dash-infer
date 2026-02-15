@@ -84,6 +84,11 @@ enum class AsSchedulingStrategy {
   ContextPriority = 0,
   Balance = 1,
 };
+
+enum class AsExecuteMode {
+  Eager = 0,
+  CudaGraph = 1,
+};
 /**
  * Converted asparam, asgraph file info class.
  */
@@ -259,6 +264,8 @@ class AsModelConfig {
   AsSchedulingStrategy scheduling_strategy = default_scheduling_strategy;
   bool text_graph = false;
   bool enable_sparsity_matmul = false;
+  AsExecuteMode execute_mode = AsExecuteMode::CudaGraph;
+  std::vector<int> cuda_graph_batch_sizes;  // empty = auto power-of-2
   std::vector<std::string> lora_names;  // deprecated, not used any longer
   int lora_max_rank = default_lora_max_rank;
   int lora_max_num = default_lora_max_num;

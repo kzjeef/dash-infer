@@ -334,6 +334,8 @@ AsStatus GenerateOp::Reshape(RuntimeContext* runtime_ctx) {
       beam_size_ = 1;
       max_k_ = 0;
       need_logprobs_ = false;
+      need_prompt_logprobs_ = false;
+      prompt_logprobs_k_ = 0;
       std::vector<int> topk_vec(batch_size_);
       std::vector<float> topp_vec(batch_size_);
       std::vector<float> temperatures(batch_size_);
@@ -346,6 +348,12 @@ AsStatus GenerateOp::Reshape(RuntimeContext* runtime_ctx) {
         }
         if (gen_ctx->gen_cfg.logprobs == true) {
           need_logprobs_ = true;
+        }
+        if (runtime_ctx->is_context && 0 > 0) {
+          need_prompt_logprobs_ = true;
+          prompt_logprobs_k_ = std::min(
+              0,
+              ctx_->GetMaxTopLogprobs());
         }
         int real_k =
             gen_ctx->gen_cfg.top_k == 0 ? vocab_size_ : gen_ctx->gen_cfg.top_k;
@@ -472,6 +480,26 @@ AsStatus GenerateOp::Reshape(RuntimeContext* runtime_ctx) {
         AS_CHECK_STATUS(token_logprobs_->SetShape(Shape{max_batch, 1}));
       }
 
+      // Alloc temporary buffers for prompt logprobs (prefill only).
+      // seq_len_ here is the current chunk's length (bounded by
+      // max_prefill_length), NOT the full prompt length.
+      if (need_prompt_logprobs_ && seq_len_ > 1) {
+        int num_positions = seq_len_ - 1;  // shifted: logits[i] predicts token[i+1]
+        int top_k = prompt_logprobs_k_;
+        prompt_logprobs_buf_ = std::make_unique<AsTensor>(
+            "prompt_logprobs_buf", backend, DataType::FLOAT32,
+            DataMode::DENSE, Shape{num_positions, vocab_size_});
+        prompt_token_logprobs_buf_ = std::make_unique<AsTensor>(
+            "prompt_token_logprobs_buf", backend, DataType::FLOAT32,
+            DataMode::DENSE, Shape{num_positions, 1});
+        prompt_topk_values_buf_ = std::make_unique<AsTensor>(
+            "prompt_topk_values_buf", backend, DataType::FLOAT32,
+            DataMode::DENSE, Shape{num_positions, top_k});
+        prompt_topk_indices_buf_ = std::make_unique<AsTensor>(
+            "prompt_topk_indices_buf", backend, DataType::INT32,
+            DataMode::DENSE, Shape{num_positions, top_k});
+      }
+
       break;
     }
     default: {
@@ -533,6 +561,116 @@ AsStatus GenerateOp::RunSampleGPU(RuntimeContext* runtime_ctx) {
                       batch_size_, vocab_size_, runtime_ctx, ws_ptr, ws_bytes,
                       ctx_);
   }
+
+  return AsStatus::ALLSPARK_SUCCESS;
+}
+
+AsStatus GenerateOp::ComputePromptLogprobs(RuntimeContext* runtime_ctx) {
+  if (!need_prompt_logprobs_ || !runtime_ctx->is_context || seq_len_ <= 1) {
+    return AsStatus::ALLSPARK_SUCCESS;
+  }
+
+  GenerateContext* gen_ctx = runtime_ctx->GetContextGenCtx();
+  const int num_positions = seq_len_ - 1;  // logits[i] predicts token[i+1]
+  const int top_k = prompt_logprobs_k_;
+
+  // Get the full-sequence logits tensor: [1, seq_len, vocab_size]
+  // (GetLastLine passed full sequence because prompt_logprobs > 0)
+  AsTensor* logits_tensor = tensor_map_->at(in_names_[0]).get();
+  void* logits_ptr = logits_tensor->GetDataPtr();  // position 0's logits
+
+  // Get input token IDs (shifted: we need token[1..seq_len-1] as targets)
+  // The input_ids are in the request's inputs or interim generated_ids.
+  AsTensor* input_ids_tensor = nullptr;
+  if (gen_ctx->request->interim.count("generated_ids")) {
+    input_ids_tensor = gen_ctx->request->interim.at("generated_ids").get();
+  } else {
+    input_ids_tensor = gen_ctx->request->inputs.at("input_ids").get();
+  }
+  // Target tokens: token[1], token[2], ..., token[seq_len-1]
+  // input_ids_tensor shape: [1, total_input_len] — we need positions from the
+  // current chunk offset. Use gen_ctx->step to determine the chunk offset.
+  int64_t* all_token_ids =
+      static_cast<int64_t*>(input_ids_tensor->GetDataPtr());
+  // For the current prefill chunk, the token offset is:
+  //   chunk_start = gen_ctx->input_len - seq_len_ (or from step tracking)
+  // But during prefill, the tokens in the logits correspond to the CURRENT
+  // chunk. The "generated_ids" tensor holds all input tokens.
+  // The target for logits[i] is token[chunk_start + i + 1].
+  int chunk_start = gen_ctx->step - seq_len_;
+  if (chunk_start < 0) chunk_start = 0;
+  int64_t* target_token_ids = all_token_ids + chunk_start + 1;
+
+  // We need target_token_ids on the same device as logits.
+  // input_ids might be on CPU or GPU depending on the flow.
+  // Create a device tensor for target tokens if needed.
+  DeviceType device = ctx_->GetDeviceType();
+  std::unique_ptr<AsTensor> target_ids_device;
+  int64_t* device_target_ids = nullptr;
+
+  if (input_ids_tensor->GetDeviceType() == device) {
+    device_target_ids = target_token_ids;
+  } else {
+    // Copy target token IDs to device
+    target_ids_device = std::make_unique<AsTensor>(
+        "prompt_target_ids", device, DataType::INT64, DataMode::DENSE,
+        Shape{num_positions});
+    target_ids_device->CopyDataFrom(
+        target_token_ids, num_positions * sizeof(int64_t),
+        input_ids_tensor->GetDeviceType(), ctx_);
+    device_target_ids = static_cast<int64_t*>(target_ids_device->GetDataPtr());
+  }
+
+  // Call the existing logprobs function to compute:
+  // 1. log_softmax over vocab for each position
+  // 2. Select actual token's logprob
+  // 3. Top-K extraction
+  //
+  // We temporarily use runtime_ctx->logprobs_*_host as scratch (will be
+  // overwritten later by decode logprobs if needed — that's fine since
+  // we copy results into the Request below).
+  void* ws_ptr = tensor_map_->at("workspace")->GetDataPtr();
+  size_t ws_bytes = tensor_map_->at("workspace")->GetSizeInByte();
+
+  logprobs_launcher(
+      dtype_,
+      logits_ptr,                 // in_logits: positions 0..seq_len-2
+      device_target_ids,          // target token IDs (shifted by 1)
+      prompt_token_logprobs_buf_->GetDataPtr(),  // per-token logprob output
+      prompt_logprobs_buf_->GetDataPtr(),         // logprobs workspace
+      prompt_topk_values_buf_->GetDataPtr(),      // top-K values output
+      static_cast<int*>(prompt_topk_indices_buf_->GetDataPtr()),  // top-K indices
+      num_positions,              // "batch_size" = number of positions
+      vocab_size_,                // "length" = vocab size
+      runtime_ctx,                // runtime context (for host buffer scratch)
+      ws_ptr, ws_bytes, ctx_);
+
+  // Synchronize to ensure D2H copies are complete before reading host buffers
+  ctx_->Synchronize();
+
+  // Read results from runtime_ctx host buffers and store in Request.
+  // logprobs_launcher stores results in runtime_ctx->logprobs_*_host.
+  int max_top_logprobs = ctx_->GetMaxTopLogprobs();
+  auto& prompt_lp = gen_ctx->request->prompt_log_probs_list;
+  auto& prompt_tlp = gen_ctx->request->prompt_token_logprobs_list;
+
+  for (int pos = 0; pos < num_positions; pos++) {
+    // Top-K logprobs for this position
+    std::vector<std::pair<int, float>> top_k_probs;
+    for (int k = 0; k < top_k && k < max_top_logprobs; k++) {
+      int idx = pos * max_top_logprobs + k;
+      top_k_probs.push_back(std::make_pair(
+          runtime_ctx->logprobs_indice_host[idx],
+          runtime_ctx->logprobs_value_host[idx]));
+    }
+    prompt_lp.push_back(top_k_probs);
+
+    // Actual token logprob at this position
+    prompt_tlp.push_back(runtime_ctx->token_logprobs_host[pos]);
+  }
+
+  DLOG(INFO) << "ComputePromptLogprobs: computed logprobs for "
+             << num_positions << " prompt positions (top_k=" << top_k << ")";
 
   return AsStatus::ALLSPARK_SUCCESS;
 }
@@ -726,6 +864,13 @@ AsStatus GenerateOp::RunSample(RuntimeContext* runtime_ctx) {
     sample_states = (void**)sample_states_->GetDataPtr();
   }
 #endif
+
+  // Compute prompt logprobs on RAW logits BEFORE penalties are applied.
+  // This must happen before process_logits_launcher which modifies logits
+  // in-place (repetition penalty, etc.).
+  if (need_prompt_logprobs_ && runtime_ctx->is_context && rank_id_ == 0) {
+    AS_CHECK_STATUS(ComputePromptLogprobs(runtime_ctx));
+  }
 
   {
     fill_max_dec_ids_launcher(runtime_ctx, max_dec_ids_, ctx_);

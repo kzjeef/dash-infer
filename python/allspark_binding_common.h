@@ -62,6 +62,7 @@ static void PyParseConfig(std::map<std::string, py::object>& py_gen_cfg,
 
   CHECK_CONFIG(py_gen_cfg, logprobs, as_gen_cfg, bool);
   CHECK_CONFIG(py_gen_cfg, top_logprobs, as_gen_cfg, int);
+  // CHECK_CONFIG(py_gen_cfg, prompt_logprobs, as_gen_cfg, int);  // not yet in GenerateConfig
 
   as_gen_cfg.mm_info = nullptr;
   CHECK_CONFIG(py_gen_cfg, mm_info, as_gen_cfg, MultiMediaInfo*);
@@ -220,6 +221,7 @@ void bindGeneratedElements(py::module& m) {
       .def_readwrite("token_logprobs_list",
                      &GeneratedElements::token_logprobs_list,
                      "Stores the probability value for each selected token.")
+      // prompt_log_probs_list and prompt_token_logprobs_list not yet in GeneratedElements
       .def_property_readonly(
           "tensors_from_model_inference",
           //  &GeneratedElements::tensors_from_model_inference,

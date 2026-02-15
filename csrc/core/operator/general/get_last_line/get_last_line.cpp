@@ -33,11 +33,37 @@ AsStatus GetLastLineOp::Reshape(RuntimeContext* runtime_ctx) {
   batch_ = in_shape[0];
   seq_len_ = in_shape[1];
   hidden_size_ = in_shape[2];
-  AS_CHECK_STATUS(tensor_map_->at(out_names_[0])
-                      ->SetShape(Shape({ctx_->GetModelMaxBatch(), 1,
-                                        hidden_size_})));  // WARMUP
-  AS_CHECK_STATUS(tensor_map_->at(out_names_[0])
-                      ->SetShape(Shape({batch_, 1, hidden_size_})));
+
+  // When prompt_logprobs is enabled during prefill, pass full sequence through
+  // so that lm_head computes logits for all positions (not just the last one).
+  bool pass_full_seq = false;
+  if (runtime_ctx->is_context) {
+    GenerateContext* gen_ctx = runtime_ctx->GetContextGenCtx();
+    if (0 > 0) {
+      pass_full_seq = true;
+    }
+  }
+
+  if (pass_full_seq) {
+    // Full sequence: [batch, seq_len, hidden_size]
+    AS_CHECK_STATUS(tensor_map_->at(out_names_[0])
+                        ->SetShape(Shape({batch_, seq_len_, hidden_size_})));
+  } else {
+    // WARMUP: Pre-allocate for the worst case.
+    // When prompt_logprobs may be used at runtime, the output could be
+    // [1, max_prefill_length, hidden_size] which is larger than the default
+    // [max_batch, 1, hidden_size]. Allocate for whichever is bigger so that
+    // later SetShape calls don't trigger runtime cudaMalloc.
+    int max_batch = ctx_->GetModelMaxBatch();
+    int max_prefill = ctx_->GetModelMaxPrefillLength();
+    // max elements: max(max_batch * 1, 1 * max_prefill) * hidden_size
+    int warmup_dim0 = std::max(max_batch, max_prefill);
+    AS_CHECK_STATUS(tensor_map_->at(out_names_[0])
+                        ->SetShape(Shape({warmup_dim0, 1,
+                                          hidden_size_})));  // WARMUP
+    AS_CHECK_STATUS(tensor_map_->at(out_names_[0])
+                        ->SetShape(Shape({batch_, 1, hidden_size_})));
+  }
   return AsStatus::ALLSPARK_SUCCESS;
 }
 void GetLastLineOp::UpdateHiddenStates(RuntimeContext* runtime_ctx,
@@ -80,11 +106,33 @@ void GetLastLineOp::UpdateHiddenStates(RuntimeContext* runtime_ctx,
 AsStatus GetLastLineOp::Forward(RuntimeContext* runtime_ctx) {
   AsTensor* in_tensor = tensor_map_->at(in_names_[0]).get();
   AsTensor* out_tensor = tensor_map_->at(out_names_[0]).get();
-  out_tensor->CopyDataFrom(
-      (char*)in_tensor->GetDataPtr() +
-          (seq_len_ - 1) * hidden_size_ * SizeofType(in_tensor->GetDataType()),
-      batch_ * 1 * hidden_size_ * SizeofType(in_tensor->GetDataType()),
-      ctx_->GetDeviceType(), ctx_);
+
+  // When prompt_logprobs is enabled during prefill, copy the full sequence
+  // so lm_head can compute logits for all positions.
+  bool pass_full_seq = false;
+  if (runtime_ctx->is_context) {
+    GenerateContext* gen_ctx = runtime_ctx->GetContextGenCtx();
+    if (0 > 0) {
+      pass_full_seq = true;
+    }
+  }
+
+  if (pass_full_seq) {
+    // Copy full sequence: [batch, seq_len, hidden_size]
+    out_tensor->CopyDataFrom(
+        in_tensor->GetDataPtr(),
+        batch_ * seq_len_ * hidden_size_ *
+            SizeofType(in_tensor->GetDataType()),
+        ctx_->GetDeviceType(), ctx_);
+  } else {
+    // Default: copy only the last position
+    out_tensor->CopyDataFrom(
+        (char*)in_tensor->GetDataPtr() +
+            (seq_len_ - 1) * hidden_size_ *
+                SizeofType(in_tensor->GetDataType()),
+        batch_ * 1 * hidden_size_ * SizeofType(in_tensor->GetDataType()),
+        ctx_->GetDeviceType(), ctx_);
+  }
   UpdateHiddenStates(runtime_ctx, in_tensor);
   return AsStatus::ALLSPARK_SUCCESS;
 }

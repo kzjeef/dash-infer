@@ -25,8 +25,8 @@ class AllGatherOp : public AsOperator {
                 const TensorMap& weights_map, TensorMap* tensor_map);
   AsStatus Reshape(RuntimeContext* runtime_ctx) override;
   AsStatus Forward(RuntimeContext* runtime_ctx) override;
-  // NCCL collectives cannot be captured in CUDA graphs
-  bool IsGraphUnsafe() const override { return true; }
+  // NCCL is graph-safe when SpinBarrier ensures synchronized capture/launch.
+  // bool IsGraphUnsafe() const override { return true; }
 
  private:
   size_t nranks_;

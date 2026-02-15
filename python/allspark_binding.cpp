@@ -534,6 +534,9 @@ PYBIND11_MODULE(_allspark, m) {
   py::enum_<AsSchedulingStrategy>(m, "AsSchedulingStrategy")
       .value("ContextPriority", AsSchedulingStrategy::ContextPriority)
       .value("Balance", AsSchedulingStrategy::Balance);
+  py::enum_<AsExecuteMode>(m, "AsExecuteMode")
+      .value("Eager", AsExecuteMode::Eager)
+      .value("CudaGraph", AsExecuteMode::CudaGraph);
 
   py::enum_<VocabType>(m, "VocabType")
       .value("VOCAB_TYPE_WPM", VocabType::VOCAB_TYPE_WPM)
@@ -626,6 +629,9 @@ PYBIND11_MODULE(_allspark, m) {
       .def_readwrite("scheduling_strategy", &AsModelConfig::scheduling_strategy)
       .def_readwrite("enable_sparsity_matmul",
                      &AsModelConfig::enable_sparsity_matmul)
+      .def_readwrite("execute_mode", &AsModelConfig::execute_mode)
+      .def_readwrite("cuda_graph_batch_sizes",
+                     &AsModelConfig::cuda_graph_batch_sizes)
       .def_readwrite("lora_max_rank", &AsModelConfig::lora_max_rank)
       .def_readwrite("lora_max_num", &AsModelConfig::lora_max_num);
 

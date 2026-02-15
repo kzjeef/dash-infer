@@ -87,7 +87,8 @@ AsStatus AllReduceOp::Forward(RuntimeContext* runtime_ctx) {
       AS_CHECK_NCCL(ncclAllReduce(in, out, count_, nccl_dtype_, ncclSum,
                                   cuda_ctx->GetNCCLComm(),
                                   cuda_ctx->GetStream()));
-      ctx_->Synchronize();
+      // Removed ctx_->Synchronize() to allow CUDA graph capture.
+      // NCCL 2.9+ supports stream capture natively.
       break;
     }
 #endif
