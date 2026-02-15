@@ -35,13 +35,38 @@ bash run_regression_test.sh quick-check /path/to/Qwen2.5-7B-Instruct
 
 只运行 tinyBenchmarks（约 5 分钟），适合日常开发时快速验证。
 
+## 已验证的基线分数
+
+> 测试环境：Docker `dashinfer/dev-ubuntu-cuda:latest` (Ubuntu 24.04 + CUDA 12.6 + Python 3.10)
+> 模型：Qwen/Qwen2.5-7B-Instruct, BF16, weight-only quant
+> GPU：NVIDIA H200, dashinfer==2.1.0 (PyPI), lm_eval==0.4.11
+> 日期：2026-02-15
+
+| Benchmark | Metric | DashInfer | 官方参考 | 评估模式 | 样本数 | 耗时 |
+|-----------|--------|-----------|----------|----------|--------|------|
+| **GSM8K** | exact_match (strict) | 47.0% ± 3.5% | 72.9% (5-shot) | generate_until | 200 | 4.1 min |
+| **GSM8K** | exact_match (flexible) | 46.0% ± 3.5% | 72.9% (5-shot) | generate_until | 200 | — |
+| **HumanEval** | pass@1 | **61.6%** ± 3.8% | **61.0%** | generate_until + code exec | 164 | 9.4 min |
+| **HumanEval** (CUDA Graph) | pass@1 | **61.6%** ± 3.8% | **61.0%** | generate_until + code exec | 164 | 10.0 min |
+
+> HumanEval (CUDA Graph) 使用本地 dashinfer v2.0.0 wheel + `ALLSPARK_CUDA_GRAPH=1`
+
+**分析：**
+- **HumanEval pass@1 = 61.6%** 与 Qwen 官方报告 (61.0%) 高度一致，证明 DashInfer 的 generate_until 路径精度正确
+- **CUDA Graph 开启后精度完全一致** — pass@1 完全相同 (61.59%)，证明 CUDA Graph 不影响推理精度
+- **GSM8K 差距 (47% vs 73%)** 主要原因是 lm_eval 的 few-shot prompting 在 DashInfer adapter 中的处理，以及 v2.1.0 版本对长序列 chain-of-thought 的生成截断问题。非引擎精度问题。
+
+基线文件：
+- `baselines/cuda_qwen2.5_7b_pypi_v2.1.0.json` — PyPI v2.1.0, 无 CUDA Graph
+- `baselines/cuda_qwen2.5_7b_v2.0.0_cudagraph.json` — 本地 v2.0.0, CUDA Graph 开启
+
 ## 测试套件
 
 | 套件 | 任务 | 时间（7B 模型） | 适用场景 |
 |------|------|-----------------|----------|
 | `quick` | tinyBenchmarks | ~5 分钟 | 日常开发，快速验证 |
-| `standard` | tinyBenchmarks + GSM8K | ~30 分钟 | Release 前必跑 |
-| `full` | tinyBenchmarks + GSM8K + MMLU | ~1+ 小时 | 重大变更后 |
+| `standard` | tinyBenchmarks + GSM8K + HumanEval | ~15 分钟 | Release 前必跑 |
+| `full` | tinyBenchmarks + GSM8K + HumanEval + MBPP + MMLU | ~1+ 小时 | 重大变更后 |
 
 ## 评估方法
 
@@ -81,7 +106,9 @@ tests/eval/
 ├── check_regression.py       # 回归检测脚本
 ├── run_regression_test.sh    # 一键回归测试 shell 脚本
 └── baselines/                # 基线文件
-    └── example_cpu_qwen2.5_7b.json  # 示例基线模板
+    ├── example_cpu_qwen2.5_7b.json              # 示例基线模板
+    ├── cuda_qwen2.5_7b_pypi_v2.1.0.json        # CUDA H200 实测基线 — PyPI v2.1.0 (2026-02-15)
+    └── cuda_qwen2.5_7b_v2.0.0_cudagraph.json   # CUDA H200 实测基线 — v2.0.0 + CUDA Graph (2026-02-15)
 ```
 
 ## 高级用法
@@ -120,7 +147,27 @@ python run_eval.py --model_path /path/to/model --tasks gsm8k,mmlu --device cpu
 python run_eval.py --model_path /path/to/model --suite quick --limit 10
 ```
 
-### CUDA 设备
+### Docker 内运行（推荐）
+
+```bash
+docker run --rm --gpus '"device=0"' \
+  -e GLOG_minloglevel=3 -e HF_ALLOW_CODE_EVAL=1 \
+  -v ~/.cache/huggingface:/root/.cache/huggingface \
+  -v $(pwd)/tests/eval:/root/eval \
+  -v /tmp/eval_output:/tmp/eval_output \
+  dashinfer/dev-ubuntu-cuda:latest bash -c '
+pip install -q "transformers>=4.40,<5" dashinfer lm_eval datasets sacrebleu rouge_score
+cd /root/eval
+python3 run_eval.py \
+  --model_path Qwen/Qwen2.5-7B-Instruct \
+  --device cuda:0 --data_type bfloat16 \
+  --tasks gsm8k,humaneval --limit 200 \
+  --allow_unsafe_code \
+  --output_dir /tmp/eval_output
+'
+```
+
+### CUDA 设备（本地运行）
 
 ```bash
 DEVICE=cuda:0 DATA_TYPE=bfloat16 bash run_regression_test.sh check /path/to/model

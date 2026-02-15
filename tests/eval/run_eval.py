@@ -145,6 +145,10 @@ def run_evaluation(args):
         else:
             eval_kwargs["limit"] = suite_limit
 
+    # Allow unsafe code execution for tasks like HumanEval/MBPP
+    if args.allow_unsafe_code or os.environ.get("HF_ALLOW_CODE_EVAL") == "1":
+        eval_kwargs["confirm_run_unsafe_code"] = True
+
     results = lm_eval.simple_evaluate(**eval_kwargs)
 
     elapsed = time.time() - start_time
@@ -308,6 +312,8 @@ Examples:
                         help="Output directory for results (default: eval_results)")
     parser.add_argument("--baseline", type=str, default=None,
                         help="Path to baseline JSON for regression comparison")
+    parser.add_argument("--allow_unsafe_code", action="store_true",
+                        help="Allow execution of model-generated code (for HumanEval/MBPP)")
 
     args = parser.parse_args()
 

@@ -1,12 +1,12 @@
-# DashInfer x86 CPU-only development environment
-# Ubuntu 24.04 + Python 3.10 + Conan 2.x
+# DashInfer CUDA development environment
+# Ubuntu 24.04 + CUDA 12.6 + Python 3.10 + Conan 2.x
 #
 # Build:
-#   docker build -f scripts/docker/dev_x86_ubuntu.Dockerfile -t dashinfer/dev-x86-ubuntu:latest .
+#   docker build -f scripts/docker/dev_ubuntu_cuda.Dockerfile -t dashinfer/dev-ubuntu-cuda:latest .
 # Run:
-#   docker run -it dashinfer/dev-x86-ubuntu:latest
+#   docker run --gpus all -it dashinfer/dev-ubuntu-cuda:latest
 
-FROM ubuntu:24.04
+FROM nvidia/cuda:12.6.3-devel-ubuntu24.04
 
 ARG PY_VER=3.10
 
@@ -23,7 +23,6 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     ninja-build \
     git \
     git-lfs \
-    vim \
     wget \
     curl \
     unzip \
@@ -35,8 +34,11 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     python${PY_VER}-venv \
     patchelf \
     numactl \
-    rpm \
-    bzip2 \
+    autoconf \
+    automake \
+    libtool \
+    openssh-client \
+    zsh \
     && rm -rf /var/lib/apt/lists/*
 
 # Python virtual environment with Python 3.10
@@ -48,6 +50,7 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir \
         "conan>=2.0,<3" \
         pybind11-global \
+        auditwheel==6.1.0 \
         pytest \
         "protobuf>=3.18,<4" \
         "transformers>=4.40,<5" \
@@ -55,13 +58,23 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
         accelerate \
         scons \
         pandas \
-        tabulate
+        tabulate \
+        pyopenssl \
+        jsonlines \
+        GitPython \
+        editdistance \
+        sacrebleu \
+        nltk \
+        rouge-score
 
-# PyTorch (CPU)
+# PyTorch (CUDA 12.6)
 RUN pip install --no-cache-dir torch torchvision torchaudio \
-    --index-url https://download.pytorch.org/whl/cpu
+    --index-url https://download.pytorch.org/whl/cu126
 
 # Initialize Conan 2.x default profile
 RUN conan profile detect --force
+
+# Timezone
+RUN ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 
 WORKDIR /root/

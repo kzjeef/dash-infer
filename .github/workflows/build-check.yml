@@ -12,18 +12,12 @@ jobs:
     strategy:
       matrix:
         arch: [X64]
-        image: ["docker.cnb.cool/thinksrc/dashinfer/dev-ubi8-cu124:latest"]
+        image: ["docker.cnb.cool/thinksrc/dashinfer/dev-ubuntu-cuda:latest"]
         enable_cuda: [0, 1]
-        exclude:
-          - arch: X64
-            image: "dev-centos8-arm:v2"
     runs-on: [self-hosted, Linux, "${{ matrix.arch }}"]
     container:
       image: ${{ matrix.image }}
     env:
-      # force use node16 instead of node20
-      # otherwise it may cause GLIBCXX_2.27 not found
-      # ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       ENABLE_CUDA: ${{ matrix.enable_cuda }}
     defaults:
       run:
@@ -40,27 +34,17 @@ jobs:
       shell: bash
       run: |
         git config --global --add safe.directory /__w/dash-infer/dash-infer
-        source /root/.bashrc
-        if [ -f "/miniconda/etc/profile.d/conda.sh" ]; then
-            source /miniconda/etc/profile.d/conda.sh
-        fi
-        source activate ds_py
+        source /opt/venv/bin/activate
         echo "ENABLE_CUDA value: $ENABLE_CUDA"
 
-        # export ENABLE_MULTINUMA="ON"
-        if [[ "${{ matrix.arch }}" == "ARM64" ]]; then
-            export AS_PLATFORM="armclang"
-            bash build.sh
+        if [ "$ENABLE_CUDA" -eq "1" ];
+        then
+            export AS_PLATFORM="cuda"
+            export AS_CUDA_SM="'70;75;80;86;89;90a'"
+            bash scripts/release/cpp_build_cuda.sh
         else
-            if [ "$ENABLE_CUDA" -eq "1" ];
-            then
-                export AS_PLATFORM="cuda"
-                export AS_CUDA_SM="'70;75;80;86;89;90a'"
-                bash scripts/release/cpp_build_cuda.sh
-            else
-                export AS_PLATFORM="x86"
-                bash build.sh
-            fi
+            export AS_PLATFORM="x86"
+            bash build.sh
         fi
 
 
@@ -68,14 +52,14 @@ jobs:
     strategy:
       matrix:
         arch: [X64]
-        image: ["docker.cnb.cool/thinksrc/dashinfer/dev-ubi8-cu124:latest"]
+        image: ["docker.cnb.cool/thinksrc/dashinfer/dev-ubuntu-cuda:latest"]
         enable_cuda: [0, 1]
     runs-on: [self-hosted, Linux, "${{ matrix.arch }}"]
     container:
       image: ${{ matrix.image }}
     env:
       ENABLE_CUDA: ${{ matrix.enable_cuda }}
-      BUILD_VERSION: 3.10
+      BUILD_VERSION: 3.12
     steps:
     - uses: git9527/clean-up-action@v2
     - name: Check out code
@@ -88,22 +72,15 @@ jobs:
       shell: bash
       run: |
         git config --global --add safe.directory /__w/dash-infer/dash-infer
-        source /root/.bashrc
-        if [ -f "/miniconda/etc/profile.d/conda.sh" ]; then
-            source /miniconda/etc/profile.d/conda.sh
-        fi
+        source /opt/venv/bin/activate
 
         echo "ENABLE_CUDA value: $ENABLE_CUDA"
 
-        if [[ "${{ matrix.arch }}" == "ARM64" ]]; then
-            bash scripts/release/python_manylinux_build.sh
+        if [ "$ENABLE_CUDA" -eq "1" ];
+        then
+          export AS_PLATFORM="cuda"
+          export AS_CUDA_SM="'80;90a'"
+          bash scripts/release/python_manylinux_build_cuda.sh
         else
-            if [ "$ENABLE_CUDA" -eq "1" ];
-            then
-              export AS_PLATFORM="cuda"
-              export AS_CUDA_SM="'80;90a'"
-              bash scripts/release/python_manylinux_build_cuda.sh
-            else
-              bash scripts/release/python_manylinux_build.sh
-            fi
+          bash scripts/release/python_manylinux_build.sh
         fi
