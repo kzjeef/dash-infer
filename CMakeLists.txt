@@ -50,12 +50,8 @@ option(ENABLE_CUDA_PINNED_WEIGHT_LOAD "enable cuda pinned memory for load weight
 option(ENABLE_SPAN_ATTENTION "enable build with span attention" ON)
 option(ENABLE_MULTINUMA "enable multinuma, if on cpu multinuma service will be compiled" OFF)
 
-## DNNL (oneDNN) option: default OFF for CUDA builds, ON for CPU/ARM builds
-if(CONFIG_ACCELERATOR_TYPE STREQUAL "CUDA")
-  option(ENABLE_DNNL "Build with oneDNN (DNNL) support" OFF)
-else()
-  option(ENABLE_DNNL "Build with oneDNN (DNNL) support" ON)
-endif()
+## DNNL (oneDNN) option: disabled by default (MKL provides better performance)
+option(ENABLE_DNNL "Build with oneDNN (DNNL) support" OFF)
 # set var let cmake module can get this var.
 set(USE_SYSTEM_NV_LIB ${USE_SYSTEM_NV_LIB})
 set(ENABLE_NV_STATIC_LIB ${ENABLE_NV_STATIC_LIB})

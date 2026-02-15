@@ -50,12 +50,8 @@ enable_glibcxx11_abi="${AS_CXX11_ABI:-OFF}"
 build_hiednn="${AS_BUILD_HIEDNN:-ON}"
 enable_span_attn="${ENABLE_SPAN_ATTENTION:-ON}"
 enable_multinuma="${ENABLE_MULTINUMA:-OFF}"
-# DNNL (oneDNN): default OFF for CUDA, ON for CPU/ARM
-if [ "${AS_PLATFORM:-cuda}" == "cuda" ]; then
-  enable_dnnl="${AS_ENABLE_DNNL:-OFF}"
-else
-  enable_dnnl="${AS_ENABLE_DNNL:-ON}"
-fi
+# DNNL (oneDNN): disabled by default (MKL provides better performance)
+enable_dnnl="${AS_ENABLE_DNNL:-OFF}"
 function clone_pull {
   GIT_URL=$1
   DIRECTORY=$2
