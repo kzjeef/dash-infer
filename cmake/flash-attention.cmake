@@ -18,6 +18,9 @@ list(REMOVE_ITEM FLASHATTN_GPU_ARCHS "75")
 message(STATUS "CMAKE_CUDA_ARCHITECTURES: ${CMAKE_CUDA_ARCHITECTURES}")
 message(STATUS "FLASHATTN_GPU_ARCHS: ${FLASHATTN_GPU_ARCHS}")
 
+# Use the project-wide CUTLASS (built by cmake/cutlass.cmake) instead of
+# flash-attention's bundled submodule.  This ensures a single CUTLASS version
+# across the entire DashInfer build (FlashAttention, SpanAttention, FlashMLA).
 set(FLASHATTN_USE_EXTERNAL_CUTLASS
     ON
     CACHE BOOL "flash-attn use external cutlass target")
@@ -54,7 +57,8 @@ include(ExternalProject)
     set(FLASH_ATTENTION_GIT_REPO https://github.com/Dao-AILab/flash-attention.git)
 # mirror for china.
 #    set(FLASH_ATTENTION_GIT_REPO https://gitee.com/lanyuflying/flash-attention.git)
-    set(FLASH_ATTENTION_GIT_TAG 7551202cb2dd245432bc878447e19015c0af3c22)
+    # v2.8.3 (2025-08-14), commit 060c9188beec3a8b62b33a3bfa6d5d2d44975fab
+    set(FLASH_ATTENTION_GIT_TAG v2.8.3)
     set(FLASH_ATTENTION_GIT_PATCH ${PROJECT_SOURCE_DIR}/third_party/patch/flash-attn.patch)
 
   set(FLASHATTN_INSTALL ${INSTALL_LOCATION}/flash-attention/install)
@@ -70,7 +74,7 @@ include(ExternalProject)
     SOURCE_SUBDIR csrc
     DEPENDS project_cutlass
     CMAKE_GENERATOR "Ninja"
-    BUILD_COMMAND ${CMAKE_COMMAND} --build . -j2
+    BUILD_COMMAND ${CMAKE_COMMAND} --build . -j8
     INSTALL_COMMAND ${CMAKE_COMMAND} -E make_directory ${FLASHATTN_LIBRARY_PATH}
         COMMAND ${CMAKE_COMMAND} -E copy <BINARY_DIR>/libflash-attn.a ${FLASHATTN_LIBRARY_PATH}/
         COMMAND ${CMAKE_COMMAND} -E copy <BINARY_DIR>/libflash-attn.so ${FLASHATTN_LIBRARY_PATH}/ || true

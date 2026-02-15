@@ -22,7 +22,7 @@ set(LMFE_LIBRARY external_lmfe)
 
 add_library(external_lmfe STATIC IMPORTED GLOBAL)
 
-set_target_properties(external_lmfe PROPERTIES IMPORTED_LOCATION ${CMAKE_CURRENT_BINARY_DIR}/lib/liblmfe_library.a)
+set_target_properties(external_lmfe PROPERTIES IMPORTED_LOCATION ${LMFE_INSTALL}/src/liblmfe_library.a)
 set(LMFE_INCLUDE ${LMFE_SOURCE_DIR}/include)
 add_dependencies(external_lmfe project_lmfe)
 message("==========================")

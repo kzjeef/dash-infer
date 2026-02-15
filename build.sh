@@ -1,6 +1,27 @@
-set -x
+set -ex
 
 clean="OFF"
+
+# Ensure ninja is available (required by hiednn, flash-attention, span-attention)
+if ! command -v ninja &> /dev/null; then
+    echo "ERROR: ninja-build is required but not found."
+    echo "       Install with: apt install ninja-build  (or yum install ninja-build)"
+    exit 1
+fi
+
+# Ensure nvcc is on PATH (common CUDA toolkit locations)
+if ! command -v nvcc &> /dev/null; then
+    for cuda_dir in /usr/local/cuda /usr/local/cuda-12 /usr/local/cuda-11; do
+        if [ -x "${cuda_dir}/bin/nvcc" ]; then
+            export PATH="${cuda_dir}/bin:$PATH"
+            echo "Added ${cuda_dir}/bin to PATH"
+            break
+        fi
+    done
+    if ! command -v nvcc &> /dev/null; then
+        echo "WARNING: nvcc not found on PATH. CUDA build may fail."
+    fi
+fi
 
 # with_platform, to support cuda/x86/arm build
 with_platform="${AS_PLATFORM:-cuda}"
@@ -136,7 +157,6 @@ elif [ "${with_platform,,}" == "armclang" ]; then
       -DBUILD_PACKAGE=${build_package} \
       -DCONFIG_ACCELERATOR_TYPE=NONE \
       -DCONFIG_HOST_CPU_TYPE=ARM \
-      -DENABLE_BLADE_AUTH=${enable_blade_auth} \
       -DENABLE_GLIBCXX11_ABI=${enable_glibcxx11_abi} \
       -DBUILD_PYTHON=OFF \
       -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
@@ -157,15 +177,10 @@ elif [ "${with_platform,,}" == "armclang" ]; then
 fi
 
 # do the make and package.
-# VERBOSE=1 make && make install
-make -j16 && make install
+make -j16
+make install
 
-
-if [ $? -eq 0 ]; then
-  if [ ${build_package} == "ON" ]; then
+if [ "${build_package}" == "ON" ]; then
   make package
-  fi
-else
-  exit $?
 fi
 
