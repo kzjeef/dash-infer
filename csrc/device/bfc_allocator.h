@@ -138,8 +138,10 @@ struct BFCAllocatorRegistry {
   bool reuse{false};
   bool valid{false};
 };
-static BFCAllocatorRegistry g_bfc_allocator_registry;
-static std::mutex g_bfc_registry_lock;
+// Defined in bfc_allocator.cpp. Previously these were `static` in the header,
+// which gave each translation unit its own copy (ODR violation).
+extern BFCAllocatorRegistry g_bfc_allocator_registry;
+extern std::mutex g_bfc_registry_lock;
 AsStatus InitBFCAllocator(DeviceType device_type,
                           const std::vector<int>& device_ids);
 std::shared_ptr<Allocator> GetBFCAllocator(const DeviceType device_type);
