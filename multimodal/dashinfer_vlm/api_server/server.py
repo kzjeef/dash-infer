@@ -188,7 +188,7 @@ class AppSettings(BaseSettings):
 
 app_settings = AppSettings()
 app = fastapi.FastAPI()
-headers = {"User-Agent": "FastChat API Server"}
+headers = {"User-Agent": "DashInfer VLM API Server"}
 get_bearer_token = HTTPBearer(auto_error=False)
 
 
@@ -635,7 +635,7 @@ async def get_embedding(payload: Dict[str, Any]):
 
 def create_openai_api_server():
     parser = argparse.ArgumentParser(
-        description="FastChat ChatGPT-Compatible RESTful API server."
+        description="DashInfer VLM OpenAI-Compatible API server."
     )
     parser.add_argument("--host", type=str, default="localhost", help="host name")
     parser.add_argument("--port", type=int, default=8000, help="port number")
