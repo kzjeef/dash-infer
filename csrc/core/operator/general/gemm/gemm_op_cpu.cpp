@@ -83,13 +83,9 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
 
   if (weight_data_type_ == DataType::BFLOAT16) {
     // BF16 path: MKL cblas_gemm_bf16bf16f32 (AMX-accelerated)
-    // C(f32) = alpha * A(bf16) * B(bf16) + beta * C
-
-    // Convert f32 input to bf16 into pre-allocated buffer (no malloc)
     int64_t in_count = m_ * k_;
     f32_to_bf16(static_cast<const float*>(in), in_bf16_buf_.data(), in_count);
 
-    // Get BF16 weight pointer: pre-stored BF16 or cached conversion
     const MKL_BF16* w_bf16_ptr;
     if (weights_[0]->GetDataType() == DataType::BFLOAT16) {
       w_bf16_ptr = reinterpret_cast<const MKL_BF16*>(
@@ -98,7 +94,6 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
       w_bf16_ptr = reinterpret_cast<const MKL_BF16*>(w_bf16_cache_.data());
     }
 
-    // Bias broadcast + binary residual
     float* out_f = static_cast<float*>(out);
     float beta = 0.0f;
     if (bias) {
@@ -120,17 +115,45 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
         w_bf16_ptr, ldb_,
         beta, out_f, n_);
   } else {
-    // FP32 path: MKL cblas_sgemm
-    cpu::GemmWraper<float>(
-        static_cast<float*>(out),
-        static_cast<const float*>(in),
-        static_cast<const float*>(weights_[0]->GetDataPtr()),
-        static_cast<const float*>(bias),
-        m_, n_, k_,
-        false, transB_,
-        lda_, ldb_, n_,
-        alpha_, 0.0f,
-        static_cast<const float*>(bin_in));
+    // FP32 path: use cblas_sgemv for decode (m=1) — avoids GEMM API overhead
+    float* out_f = static_cast<float*>(out);
+    const float* in_f = static_cast<const float*>(in);
+    const float* w_f = static_cast<const float*>(weights_[0]->GetDataPtr());
+
+    if (m_ == 1 && !bin_in) {
+      // Decode (m=1): matrix-vector multiply is faster via sgemv
+      // y = alpha * W^T * x + beta * y  (or y = alpha * W * x)
+      if (bias) {
+        memcpy(out_f, bias, n_ * sizeof(float));
+        if (transB_) {
+          // W is [n, k], compute out = alpha * W * x + bias
+          cblas_sgemv(CblasRowMajor, CblasNoTrans, n_, k_, alpha_,
+                      w_f, ldb_, in_f, 1, 1.0f, out_f, 1);
+        } else {
+          // W is [k, n], compute out = alpha * W^T * x + bias
+          cblas_sgemv(CblasRowMajor, CblasTrans, k_, n_, alpha_,
+                      w_f, ldb_, in_f, 1, 1.0f, out_f, 1);
+        }
+      } else {
+        if (transB_) {
+          cblas_sgemv(CblasRowMajor, CblasNoTrans, n_, k_, alpha_,
+                      w_f, ldb_, in_f, 1, 0.0f, out_f, 1);
+        } else {
+          cblas_sgemv(CblasRowMajor, CblasTrans, k_, n_, alpha_,
+                      w_f, ldb_, in_f, 1, 0.0f, out_f, 1);
+        }
+      }
+    } else {
+      // Prefill (m>1) or binary: use cblas_sgemm via GemmWraper
+      cpu::GemmWraper<float>(
+          out_f, in_f, w_f,
+          static_cast<const float*>(bias),
+          m_, n_, k_,
+          false, transB_,
+          lda_, ldb_, n_,
+          alpha_, 0.0f,
+          static_cast<const float*>(bin_in));
+    }
   }
 
   // Post-op: fused activation
