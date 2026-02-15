@@ -42,13 +42,23 @@ if (NOT MKL_FOUND)
     # Manual setup for newer MKL versions (2024+) without bundled cmake configs
     message(STATUS "MKL cmake config not found, using manual library setup")
     # MKL static libs have circular dependencies, must use --start-group/--end-group
+
+    # Select threading library based on RUNTIME_THREAD
+    if (${RUNTIME_THREAD} STREQUAL "TBB")
+        set(MKL_THREAD_LIB ${MKL_ROOT}/lib/intel64/libmkl_tbb_thread.a)
+        set(THREAD_RUNTIME_LIB -ltbb)
+    elseif (${RUNTIME_THREAD} STREQUAL "OMP")
+        set(MKL_THREAD_LIB ${MKL_ROOT}/lib/intel64/libmkl_gnu_thread.a)
+        set(THREAD_RUNTIME_LIB -lgomp)
+    endif()
+
     set(MKL_LIBRARIES
         -Wl,--start-group
         ${MKL_ROOT}/lib/intel64/libmkl_intel_lp64.a
         ${MKL_ROOT}/lib/intel64/libmkl_core.a
-        ${MKL_ROOT}/lib/intel64/libmkl_gnu_thread.a
+        ${MKL_THREAD_LIB}
         -Wl,--end-group
-        -lgomp -ldl -lpthread
+        ${THREAD_RUNTIME_LIB} -ldl -lpthread
     )
     add_library(MKL::MKL INTERFACE IMPORTED)
     set_target_properties(MKL::MKL PROPERTIES
