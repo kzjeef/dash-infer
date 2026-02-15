@@ -51,6 +51,8 @@ Table of Contents
 
    get_started/quick_start_api_server_en.md
 
+   get_started/quick_start_api_server_cn.md
+
    get_started/env_var_options_en
 
 .. _supported_models:
@@ -88,6 +90,7 @@ Table of Contents
    :caption: Developer Guide
 
    devel/source_code_build_en.rst
+   devel/testing_en.rst
 
 .. _quant_support:
 .. toctree::
