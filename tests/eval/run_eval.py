@@ -23,7 +23,7 @@ Usage:
     python run_eval.py --model_path /path/to/qwen2.5-7b --suite standard \
         --baseline baselines/cpu_qwen2.5_7b.json
 
-Copyright (c) Alibaba, Inc. and its affiliates.
+ Copyright (c) 2025-2026 DashInfer Team.
 """
 
 import argparse

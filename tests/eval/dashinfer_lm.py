@@ -22,7 +22,7 @@ Usage:
     # CLI (requires lm_eval to discover this module)
     # lm_eval --model dashinfer --model_args pretrained=/path/to/model ...
 
-Copyright (c) Alibaba, Inc. and its affiliates.
+ Copyright (c) 2025-2026 DashInfer Team.
 """
 
 import os
