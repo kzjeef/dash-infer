@@ -115,45 +115,17 @@ AsStatus GemmOpCPU::Forward(RuntimeContext* runtime_ctx) {
         w_bf16_ptr, ldb_,
         beta, out_f, n_);
   } else {
-    // FP32 path: use cblas_sgemv for decode (m=1) — avoids GEMM API overhead
-    float* out_f = static_cast<float*>(out);
-    const float* in_f = static_cast<const float*>(in);
-    const float* w_f = static_cast<const float*>(weights_[0]->GetDataPtr());
-
-    if (m_ == 1 && !bin_in) {
-      // Decode (m=1): matrix-vector multiply is faster via sgemv
-      // y = alpha * W^T * x + beta * y  (or y = alpha * W * x)
-      if (bias) {
-        memcpy(out_f, bias, n_ * sizeof(float));
-        if (transB_) {
-          // W is [n, k], compute out = alpha * W * x + bias
-          cblas_sgemv(CblasRowMajor, CblasNoTrans, n_, k_, alpha_,
-                      w_f, ldb_, in_f, 1, 1.0f, out_f, 1);
-        } else {
-          // W is [k, n], compute out = alpha * W^T * x + bias
-          cblas_sgemv(CblasRowMajor, CblasTrans, k_, n_, alpha_,
-                      w_f, ldb_, in_f, 1, 1.0f, out_f, 1);
-        }
-      } else {
-        if (transB_) {
-          cblas_sgemv(CblasRowMajor, CblasNoTrans, n_, k_, alpha_,
-                      w_f, ldb_, in_f, 1, 0.0f, out_f, 1);
-        } else {
-          cblas_sgemv(CblasRowMajor, CblasTrans, k_, n_, alpha_,
-                      w_f, ldb_, in_f, 1, 0.0f, out_f, 1);
-        }
-      }
-    } else {
-      // Prefill (m>1) or binary: use cblas_sgemm via GemmWraper
-      cpu::GemmWraper<float>(
-          out_f, in_f, w_f,
-          static_cast<const float*>(bias),
-          m_, n_, k_,
-          false, transB_,
-          lda_, ldb_, n_,
-          alpha_, 0.0f,
-          static_cast<const float*>(bin_in));
-    }
+    // FP32 path: MKL cblas_sgemm (faster than sgemv even for m=1 with many threads)
+    cpu::GemmWraper<float>(
+        static_cast<float*>(out),
+        static_cast<const float*>(in),
+        static_cast<const float*>(weights_[0]->GetDataPtr()),
+        static_cast<const float*>(bias),
+        m_, n_, k_,
+        false, transB_,
+        lda_, ldb_, n_,
+        alpha_, 0.0f,
+        static_cast<const float*>(bin_in));
   }
 
   // Post-op: fused activation
