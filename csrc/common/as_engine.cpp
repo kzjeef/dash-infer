@@ -1262,6 +1262,17 @@ AsStatus AsEngineImpl::WarmupModel(const char* model_name) {
     return AsStatus::ALLSPARK_SUCCESS;
   }
 
+  // CPU does not need warmup: no GPU memory pre-allocation, no CUDA context
+  // init, and oneDNN primitives are JIT-compiled on first real request.
+  // Skipping saves ~46s for a 7B FP32 model.
+  if (device_ctx_->GetDeviceType() == DeviceType::CPU) {
+    LOG(INFO) << "CPU device detected, skipping warmup (no GPU memory to "
+                 "pre-allocate). Set ALLSPARK_FORCE_WARMUP=1 to override.";
+    if (EnvVarConfig::GetInt("ALLSPARK_FORCE_WARMUP", 0) != 1) {
+      return AsStatus::ALLSPARK_SUCCESS;
+    }
+  }
+
   // generate and load fake loras upto limit
   auto fake_lora_names = LoadFakeLoras(model_name);
 

@@ -938,10 +938,10 @@ class HuggingFaceModel(LLM):
                                    .max_batch(max_batch)
                                    )
 
-        # TODO: Enable BF16 auto-detection after fixing BF16 decode crash
-        # from .engine import TargetDevice as _TD
-        # if device_type in (_TD.CPU, _TD.CPU_NUMA, "CPU", "cpu"):
-        #     runtime_cfg_builder.matmul_precision("auto")
+        # Auto-detect BF16 for CPU targets (uses MKL cblas_gemm_bf16bf16f32)
+        from .engine import TargetDevice as _TD
+        if device_type in (_TD.CPU, _TD.CPU_NUMA, "CPU", "cpu"):
+            runtime_cfg_builder.matmul_precision("auto")
 
         return runtime_cfg_builder
 
